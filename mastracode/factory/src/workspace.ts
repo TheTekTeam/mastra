@@ -260,6 +260,12 @@ export interface CreateWorkspaceFactoryOptions {
   projects?: Pick<FactoryProjectsStorage, 'get'>;
   /** Runtime workspace/token registrations invalidated when a session retires. */
   workspaceRegistry?: FactoryWorkspaceRegistry;
+  /**
+   * Explicit local no-auth mode. Only sentinel `local/local` sessions may use
+   * the synthetic caller identity; authenticated and non-local sessions remain
+   * fail-closed.
+   */
+  authDisabled?: boolean;
 }
 
 type WorkspaceUnregister = () => Promise<void> | void;
@@ -372,15 +378,22 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     }
 
     const user = getFactoryAuthUserFromContext(requestContext);
-    const userId = getFactoryAuthUserId(user);
+    const authenticatedUserId = getFactoryAuthUserId(user);
+    const localNoAuthSession =
+      options.authDisabled === true && session.orgId === 'local' && session.userId === 'local';
+    const callerOrgId = localNoAuthSession ? 'local' : user?.organizationId;
+    const userId = localNoAuthSession ? 'local' : authenticatedUserId;
     // No identity at all is a server-side caller that forgot to seed one
-    // (webhook, cron), not someone reaching for another user's session.
-    if (!user?.organizationId || !userId) {
+    // (webhook, cron), not someone reaching for another user's session. The
+    // sole exception is the explicit auth-disabled single-user deployment,
+    // where Factory persists every tenant-owned row under the local/local
+    // sentinel and the open server itself is the trust boundary.
+    if (!callerOrgId || !userId) {
       throw new Error(`Factory session ${session.sessionId} was resolved without a caller identity`);
     }
     // Org-visible sessions open to any member of the owning organization;
     // only private sessions stay owner-only. Cross-org access never passes.
-    if (user.organizationId !== session.orgId || (session.visibility === 'private' && userId !== session.userId)) {
+    if (callerOrgId !== session.orgId || (session.visibility === 'private' && userId !== session.userId)) {
       throw new Error(`Factory session ${session.sessionId} is not available to the current user`);
     }
     if (!sandboxConfig) {
