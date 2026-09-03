@@ -195,6 +195,7 @@ async function resolveOrgTenant(
 ): Promise<{ tenant: { orgId: string; userId: string } } | { response: Response }> {
   await auth.ensureUser(c);
   const tenant = auth.tenant(c);
+  if (!tenant && !auth.enabled()) return { tenant: { orgId: 'local', userId: 'local' } };
   if (!tenant) return { response: c.json({ error: 'unauthorized' }, 401) };
   if (!tenant.orgId) {
     return {
@@ -402,7 +403,8 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
         // Resolve the session from the request cookie: on platform deploys custom
         // apiRoutes run on an isolated context where the gate's stash is invisible.
         await auth.ensureUser(loose(c));
-        const tenant = auth.tenant(loose(c));
+        const resolvedTenant = auth.tenant(loose(c));
+        const tenant = resolvedTenant ?? (!auth.enabled() ? { orgId: 'local', userId: 'local' } : undefined);
         if (!tenant) return c.json({ error: 'unauthorized', reason: 'auth_required' }, 401);
 
         // Org-scoped: personal (no-org) users have GitHub projects disabled. Report
@@ -453,9 +455,9 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
     registerApiRoute('/web/github/subscriptions', {
       method: 'GET',
       handler: async c => {
-        await auth.ensureUser(loose(c));
-        const tenant = auth.tenant(loose(c));
-        if (!tenant?.orgId) return c.json({ error: 'unauthorized' }, 401);
+        const resolved = await resolveOrgTenant(loose(c), auth);
+        if ('response' in resolved) return resolved.response;
+        const tenant = resolved.tenant;
 
         const resourceId = c.req.query('resourceId');
         const threadId = c.req.query('threadId');
