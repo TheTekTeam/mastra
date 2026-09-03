@@ -53,7 +53,11 @@ const integrations = [
   { id: 'linear', intake: linear },
 ];
 
-function buildApp(user: { workosId: string; organizationId?: string } | null, intakeIntegrations = integrations) {
+function buildApp(
+  user: { workosId: string; organizationId?: string } | null,
+  intakeIntegrations = integrations,
+  auth = fakeRouteAuth(),
+) {
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -62,7 +66,7 @@ function buildApp(user: { workosId: string; organizationId?: string } | null, in
   mountApiRoutes(
     app as any,
     new IntakeRoutes({
-      auth: fakeRouteAuth(),
+      auth,
       audit,
       intake: seed.intake,
       projects: seed.projects,
@@ -97,6 +101,31 @@ beforeEach(async () => {
 });
 
 describe('intake configuration', () => {
+  it('uses the sentinel local tenant when auth is explicitly disabled', async () => {
+    const localAuth = fakeRouteAuth({ enabled: false });
+    const initial = await buildApp(null, integrations, localAuth).request('/web/intake/config');
+    expect(initial.status).toBe(200);
+
+    const config = {
+      github: { enabled: true, sourceIds: ['repo-1'] },
+      linear: { enabled: false, sourceIds: null },
+    };
+    const saved = await buildApp(null, integrations, localAuth).request('/web/intake/config', {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+
+    expect(saved.status).toBe(200);
+    expect(await seed.intake.getConfig({ orgId: 'local', userId: 'local' })).toEqual(config);
+
+    const items = await buildApp(null, integrations, localAuth).request('/web/intake/items');
+    expect(items.status).toBe(200);
+    expect((await items.json()).items).toEqual([
+      expect.objectContaining({ integrationId: 'github', title: 'Fix login' }),
+    ]);
+  });
+
   it('requires an authenticated organization', async () => {
     expect((await buildApp(null).request('/web/intake/config')).status).toBe(401);
     expect((await buildApp({ workosId: 'u1' }).request('/web/intake/config')).status).toBe(403);
