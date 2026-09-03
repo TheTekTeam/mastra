@@ -240,7 +240,11 @@ export class ProjectRoutes extends Route<ProjectRoutesDeps> {
   async #resolveTenant(context: Context): Promise<{ orgId: string; userId: string } | { response: Response }> {
     await this.deps.auth.ensureUser(context);
     const tenant = this.deps.auth.tenant(context);
-    if (!tenant) return { response: context.json({ error: 'unauthorized' }, 401) };
+    if (!tenant) {
+      return this.deps.auth.enabled()
+        ? { response: context.json({ error: 'unauthorized' }, 401) }
+        : { orgId: 'local', userId: 'local' };
+    }
     if (!tenant.orgId) {
       return {
         response: context.json(
