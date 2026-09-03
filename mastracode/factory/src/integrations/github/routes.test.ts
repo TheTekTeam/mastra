@@ -532,8 +532,9 @@ vi.mock('./config', () => ({
 // cookie-based session resolution (`cookieUser`) the same way production
 // resolves a session cookie before scoping the tenant.
 let cookieUser: { workosId: string; organizationId?: string } | null = null;
+let authEnabled = true;
 const testAuth: RouteAuth = {
-  enabled: () => true,
+  enabled: () => authEnabled,
   ensureUser: async (c: any) => {
     const existing = c.get('factoryAuthUser');
     if (existing) return existing;
@@ -719,6 +720,7 @@ beforeEach(() => {
   featureEnabled = true;
   sandboxEnabled = true;
   cookieUser = null;
+  authEnabled = true;
   settingsRows.clear();
   auditRecorded = [];
   auditFailure = undefined;
@@ -951,6 +953,28 @@ describe('webhook route', () => {
 });
 
 describe('status route', () => {
+  it('uses the sentinel local tenant when auth is explicitly disabled', async () => {
+    authEnabled = false;
+    tables.installations.push(
+      installationRow({
+        orgId: 'local',
+        userId: 'local',
+        installationId: 7,
+        accountLogin: 'octo',
+        accountType: 'User',
+      }),
+    );
+
+    const res = await buildApp(null).request('/web/github/status');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      enabled: true,
+      connected: true,
+      reason: 'ready',
+      installations: [expect.objectContaining({ installationId: 7 })],
+    });
+  });
+
   it('reports disabled without the feature', async () => {
     featureEnabled = false;
     const res = await buildApp({ workosId: 'u1' }).request('/web/github/status');
@@ -977,6 +1001,15 @@ describe('status route', () => {
     expect(json.enabled).toBe(true);
     expect(json.connected).toBe(true);
     expect(json.installations[0].installationId).toBe(7);
+  });
+});
+
+describe('local no-auth GitHub connect', () => {
+  it('starts the GitHub OAuth flow using the sentinel local tenant', async () => {
+    authEnabled = false;
+    const res = await buildApp(null).request('/auth/github/connect');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toContain('github.com/login/oauth/authorize');
   });
 });
 
