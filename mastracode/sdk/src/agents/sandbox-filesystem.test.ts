@@ -154,6 +154,39 @@ describe('SandboxFilesystem', () => {
     expect(writeCall).toContain(`printf %s '${b64}' | base64 -d > '${WORKDIR}/notes.txt'`);
   });
 
+  it('chunks large writes so no shell command carries the complete payload', async () => {
+    const { sandbox, fs } = makeFs();
+    const content = 'x'.repeat(200_000);
+
+    await fs.writeFile('/large.txt', content);
+
+    const stagedChunks = sandbox.calls.filter(call => call.includes('base64 -d >>') && call.includes('__mastra_write_'));
+    expect(stagedChunks.length).toBeGreaterThan(1);
+    expect(Math.max(...sandbox.calls.map(call => call.length))).toBeLessThan(32 * 1024);
+    expect(
+      sandbox.calls.some(
+        call => call.includes(`cat '${WORKDIR}/large.txt.__mastra_write_`) && call.includes(`> '${WORKDIR}/large.txt'`),
+      ),
+    ).toBe(true);
+    expect(sandbox.calls.some(call => call.includes(`rm -f '${WORKDIR}/large.txt.__mastra_write_`))).toBe(true);
+  });
+
+  it('chunks large appends before appending the staged file', async () => {
+    const { sandbox, fs } = makeFs();
+    const content = 'y'.repeat(200_000);
+
+    await fs.appendFile('/large.log', content);
+
+    const stagedChunks = sandbox.calls.filter(call => call.includes('base64 -d >>') && call.includes('__mastra_write_'));
+    expect(stagedChunks.length).toBeGreaterThan(1);
+    expect(Math.max(...sandbox.calls.map(call => call.length))).toBeLessThan(32 * 1024);
+    expect(
+      sandbox.calls.some(
+        call => call.includes(`cat '${WORKDIR}/large.log.__mastra_write_`) && call.includes(`>> '${WORKDIR}/large.log'`),
+      ),
+    ).toBe(true);
+  });
+
   it('lists a directory and parses type/name pairs', async () => {
     const { sandbox, fs } = makeFs(script => {
       if (isContainmentCheck(script)) return realpathResult(WORKDIR);
