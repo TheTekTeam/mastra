@@ -81,6 +81,13 @@ export interface SandboxFilesystemOptions {
 /** Default per-command deadline so a hung sandbox can't block file tools forever. */
 const COMMAND_TIMEOUT_MS = 30_000;
 
+/**
+ * Raw bytes per staged write chunk. 18 KiB encodes to 24 KiB of base64,
+ * keeping every content-bearing sh -c argument comfortably below Linux's
+ * per-argument MAX_ARG_STRLEN while avoiding a second full-file base64 copy.
+ */
+const WRITE_CHUNK_BYTES = 18 * 1024;
+
 /** Single-quote a string for safe POSIX shell interpolation. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
@@ -255,6 +262,42 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
     return result;
   }
 
+  /**
+   * Stage content in bounded base64 chunks. The old implementation embedded
+   * the complete encoded file in one sh -c argv entry, so sufficiently large
+   * string_replace_lsp edits failed with E2BIG and could force V8 to flatten
+   * a very large command string. Chunking avoids both failure modes.
+   */
+  private async stageContent(abs: string, content: Buffer, createParent: boolean): Promise<string> {
+    const dir = posixPath.dirname(abs);
+    const suffix = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const stage = `${abs}.__mastra_write_${suffix}`;
+    const mkdir = createParent ? `mkdir -p ${shellQuote(dir)} && ` : '';
+
+    await this.execOk(
+      `${mkdir}umask 077; (set -C; : > ${shellQuote(stage)})`,
+      `stage write ${abs}`,
+    );
+
+    try {
+      for (let offset = 0; offset < content.length; offset += WRITE_CHUNK_BYTES) {
+        const chunk = content.subarray(offset, offset + WRITE_CHUNK_BYTES).toString('base64');
+        await this.execOk(
+          `printf %s ${shellQuote(chunk)} | base64 -d >> ${shellQuote(stage)}`,
+          `stage write ${abs}`,
+        );
+      }
+      return stage;
+    } catch (error) {
+      await this.exec(`rm -f ${shellQuote(stage)}`).catch(() => {});
+      throw error;
+    }
+  }
+
+  private async removeStage(stage: string): Promise<void> {
+    await this.exec(`rm -f ${shellQuote(stage)}`).catch(() => {});
+  }
+
   // ── File operations ────────────────────────────────────────────────────
 
   async readFile(path: string, options?: ReadOptions): Promise<string | Buffer> {
@@ -280,32 +323,69 @@ export class SandboxFilesystem implements WorkspaceFilesystem {
   async writeFile(path: string, content: FileContent, options?: WriteOptions): Promise<void> {
     const abs = await this.resolveAsync(path);
     await this.assertContainedDest(abs, path);
-    const b64 = toBuffer(content).toString('base64');
+    const buffer = toBuffer(content);
     const dir = posixPath.dirname(abs);
-    const mkdir = options?.recursive === false ? '' : `mkdir -p ${shellQuote(dir)} && `;
-    if (options?.overwrite === false) {
-      // `set -C` (noclobber) makes the redirect itself the exclusivity check —
-      // no exists() pre-check that could race with a concurrent writer.
-      const result = await this.exec(
-        `${mkdir}{ (set -C; printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
-      );
-      if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
-      if (result.exitCode !== 0) {
-        throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+    const createParent = options?.recursive !== false;
+    const mkdir = createParent ? `mkdir -p ${shellQuote(dir)} && ` : '';
+
+    // Preserve the existing single-command fast path for small writes.
+    if (buffer.length <= WRITE_CHUNK_BYTES) {
+      const b64 = buffer.toString('base64');
+      if (options?.overwrite === false) {
+        const result = await this.exec(
+          `${mkdir}{ (set -C; printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
+        );
+        if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
+        if (result.exitCode !== 0) {
+          throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+        }
+        return;
       }
+      await this.execOk(
+        `${mkdir}printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}`,
+        `writeFile ${path}`,
+      );
       return;
     }
-    await this.execOk(`${mkdir}printf %s ${shellQuote(b64)} | base64 -d > ${shellQuote(abs)}`, `writeFile ${path}`);
+
+    const stage = await this.stageContent(abs, buffer, createParent);
+    try {
+      if (options?.overwrite === false) {
+        const result = await this.exec(
+          `{ (set -C; cat ${shellQuote(stage)} > ${shellQuote(abs)}) 2>/dev/null || { [ -e ${shellQuote(abs)} ] && exit ${EXIT_EXISTS} || exit 1; }; }`,
+        );
+        if (result.exitCode === EXIT_EXISTS) throw new FileExistsError(path);
+        if (result.exitCode !== 0) {
+          throw new Error(`writeFile ${path} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
+        }
+        return;
+      }
+      await this.execOk(`cat ${shellQuote(stage)} > ${shellQuote(abs)}`, `writeFile ${path}`);
+    } finally {
+      await this.removeStage(stage);
+    }
   }
 
   async appendFile(path: string, content: FileContent): Promise<void> {
     const abs = await this.resolveAsync(path);
     await this.assertContainedDest(abs, path);
-    const b64 = toBuffer(content).toString('base64');
-    await this.execOk(
-      `mkdir -p ${shellQuote(posixPath.dirname(abs))} && printf %s ${shellQuote(b64)} | base64 -d >> ${shellQuote(abs)}`,
-      `appendFile ${path}`,
-    );
+    const buffer = toBuffer(content);
+
+    if (buffer.length <= WRITE_CHUNK_BYTES) {
+      const b64 = buffer.toString('base64');
+      await this.execOk(
+        `mkdir -p ${shellQuote(posixPath.dirname(abs))} && printf %s ${shellQuote(b64)} | base64 -d >> ${shellQuote(abs)}`,
+        `appendFile ${path}`,
+      );
+      return;
+    }
+
+    const stage = await this.stageContent(abs, buffer, true);
+    try {
+      await this.execOk(`cat ${shellQuote(stage)} >> ${shellQuote(abs)}`, `appendFile ${path}`);
+    } finally {
+      await this.removeStage(stage);
+    }
   }
 
   async deleteFile(path: string, options?: RemoveOptions): Promise<void> {
