@@ -22,6 +22,31 @@ const projectRoutes = (
   }).routes();
 
 describe('ProjectRoutes', () => {
+  it('uses the sentinel local tenant when auth is disabled', async () => {
+    const seed = await createFactoryStorageForTests();
+    const app = new Hono();
+    mountApiRoutes(
+      app as never,
+      new ProjectRoutes({
+        auth: fakeRouteAuth({ enabled: false }),
+        projects: seed.projects,
+        sourceControl: seed.sourceControl,
+      }).routes(),
+    );
+
+    const createdResponse = await app.request('/web/factory/projects', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Local Factory' }),
+    });
+    expect(createdResponse.status).toBe(201);
+
+    const listedResponse = await app.request('/web/factory/projects');
+    expect(listedResponse.status).toBe(200);
+    const listed = (await listedResponse.json()) as { projects: Array<{ name: string }> };
+    expect(listed.projects).toEqual([expect.objectContaining({ name: 'Local Factory' })]);
+  });
+
   it('creates, lists, reads, updates, and deletes a project without integrations', async () => {
     const seed = await createFactoryStorageForTests();
     const app = new Hono();
