@@ -916,6 +916,7 @@ export class MastraFactory {
           ),
           ...(factoryProjectsStorage ? { projects: factoryProjectsStorage } : {}),
           ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
+          authDisabled: auth === undefined,
           workspaceRegistry,
         }),
         disableGithubSignals: true,
