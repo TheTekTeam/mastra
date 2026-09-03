@@ -207,6 +207,7 @@ export class WorkItemRoutes extends Route<WorkItemRoutesDeps> {
   async #resolveTenant(c: Context): Promise<{ orgId: string; userId: string } | { response: Response }> {
     await this.deps.auth.ensureUser(c);
     const tenant = this.deps.auth.tenant(c);
+    if (!tenant && !this.deps.auth.enabled()) return { orgId: 'local', userId: 'local' };
     if (!tenant) return { response: c.json({ error: 'unauthorized' }, 401) };
     if (!tenant.orgId) {
       return {
