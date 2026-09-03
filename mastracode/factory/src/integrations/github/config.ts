@@ -1,11 +1,10 @@
 /**
  * Composite feature gate + diagnostics for the GitHub App project feature.
  *
- * The GitHub feature is enabled only when *all three* hold:
- *  - a `GithubIntegration` instance is registered with the factory
- *    (constructed by the deploy entry from the `GITHUB_APP_*` env vars),
- *  - web auth is enabled (a per-user installation requires a logged-in user),
- *  - the application database is configured.
+ * The GitHub feature is enabled when a `GithubIntegration` instance is
+ * registered with the factory. Authenticated deployments scope installations
+ * to the signed-in organization; explicit no-auth local deployments use the
+ * sentinel `local` tenant used by the other Factory storage domains.
  *
  * OAuth/install `state` signing lives in `../../state-signing.ts` — the factory
  * creates one shared signer at boot and hands it to every integration.
@@ -39,7 +38,7 @@ const GITHUB_APP_ENV_VARS = [
 export interface GithubFeatureGateOptions {
   /** The registered GitHub integration, when configured. */
   github: GithubIntegration | undefined;
-  /** Web auth seam — the feature requires a logged-in user. */
+  /** Web auth seam — enabled deployments use its tenant; local mode uses a sentinel tenant. */
   auth: RouteAuth;
   /** True when the application database is configured. */
   appDbConfigured: boolean;
@@ -53,7 +52,7 @@ export interface GithubFeatureGateOptions {
  * True when the GitHub App project feature should be active.
  */
 export function isGithubFeatureEnabled(options: Pick<GithubFeatureGateOptions, 'github' | 'auth'>): boolean {
-  return options.github !== undefined && options.auth.enabled();
+  return options.github !== undefined;
 }
 
 /**
