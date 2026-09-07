@@ -1216,7 +1216,7 @@ describe('GitHub session workspace preparation', () => {
   });
 
   it('opens a local/local Factory session without a caller identity when auth is explicitly disabled', async () => {
-    const { workspace } = await createLocalFactory('mastracode-web-local-no-auth-', undefined, true);
+    const { root, workspace } = await createLocalFactory('mastracode-web-local-no-auth-', undefined, true);
     addProject({ orgId: 'local' });
     addSession({ id: 'session-a', orgId: 'local', userId: 'local' });
     const requestContext = createGithubRequestContext('project-1', 'session-a', {});
