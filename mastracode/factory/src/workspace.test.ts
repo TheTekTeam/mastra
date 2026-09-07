@@ -1225,7 +1225,7 @@ describe('GitHub session workspace preparation', () => {
     const opened = await workspace({ requestContext });
 
     expect(opened.id).toContain('project-1-session-a');
-    expect(mocks.ensureSandbox).toHaveBeenCalledWith(
+    expect(mocks.materializeRepo).toHaveBeenCalledWith(
       expect.any(Object),
       { GH_TOKEN: 'repo-token-repository-1' },
       undefined,
