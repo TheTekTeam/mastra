@@ -16,6 +16,7 @@ import { renderHookWithProviders, TEST_BASE_URL } from '../../../e2e/ui/render';
 import { useFactoryAuth } from '../useFactoryAuth';
 
 const AUTH_ME_URL = `${TEST_BASE_URL}/auth/me`;
+const AUTH_CAPABILITIES_URL = `${TEST_BASE_URL}/api/auth/capabilities`;
 
 afterEach(() => {
   delete window.__MASTRACODE_CONFIG__;
@@ -92,6 +93,53 @@ describe('useFactoryAuth', () => {
       await waitFor(() => expect(result.current.data).toBeDefined());
       expect(result.current.data).toEqual({ authEnabled: false, authenticated: false });
       expect(hit).toHaveBeenCalledTimes(1);
+    });
+
+    it('accepts an SPA fallback only when capabilities explicitly reports auth disabled', async () => {
+      const authHit = vi.fn();
+      const capabilitiesHit = vi.fn();
+      server.use(
+        http.get(AUTH_ME_URL, () => {
+          authHit();
+          return new HttpResponse('<!doctype html><html><body>Factory</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+          });
+        }),
+        http.get(AUTH_CAPABILITIES_URL, () => {
+          capabilitiesHit();
+          return HttpResponse.json({ enabled: false, login: null });
+        }),
+      );
+
+      const { result } = renderHookWithProviders(() => useFactoryAuth());
+
+      await waitFor(() => expect(result.current.data).toBeDefined());
+      expect(result.current.data).toEqual({ authEnabled: false, authenticated: false });
+      expect(authHit).toHaveBeenCalledTimes(1);
+      expect(capabilitiesHit).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails closed when an SPA fallback is returned while capabilities reports auth enabled', async () => {
+      server.use(
+        http.get(
+          AUTH_ME_URL,
+          () =>
+            new HttpResponse('<!doctype html><html><body>Unexpected fallback</body></html>', {
+              status: 200,
+              headers: { 'Content-Type': 'text/html' },
+            }),
+        ),
+        http.get(AUTH_CAPABILITIES_URL, () => HttpResponse.json({ enabled: true, login: '/auth/login' })),
+      );
+
+      const { result } = renderHookWithProviders(() => useFactoryAuth());
+
+      await waitFor(() => expect(result.current.isError).toBe(true));
+      expect(result.current.data).toBeUndefined();
+      expect(result.current.error).toEqual(
+        new Error('Auth check returned a non-JSON response while authentication is enabled'),
+      );
     });
   });
 });

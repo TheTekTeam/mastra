@@ -3,8 +3,10 @@
  *
  * The server protects the whole surface; this module makes the SPA cooperate:
  * - `fetchAuthState()` reads `/auth/me` to decide whether to show the splash
- *   (unauthenticated) or the app, and to render identity / sign-out. Degrades
- *   gracefully to "auth disabled" when the route is absent.
+ *   (unauthenticated) or the app, and to render identity / sign-out. It degrades
+ *   to "auth disabled" when the route is absent and, for older/static hosts
+ *   where the SPA fallback answers `/auth/me`, confirms the state against the
+ *   server-authoritative `/api/auth/capabilities` endpoint before proceeding.
  * - `loginUrl()` / `redirectToLogin()` build/navigate to the hosted WorkOS
  *   login URL (used by the /signin page).
  * - `redirectToLogout()` / `logoutUrl()` send the user through the server logout route.
@@ -26,6 +28,29 @@ export interface FactoryAuthState {
   provider?: string;
   /** True when the provider hosts credential forms and sign-up is disabled. */
   signUpDisabled?: boolean;
+}
+
+async function fetchAuthCapabilities(baseUrl: string): Promise<{ enabled: boolean }> {
+  const res = await fetch(`${baseUrl}/api/auth/capabilities`, {
+    headers: { Accept: 'application/json' },
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    throw new Error(`Auth capabilities check failed (${res.status})`);
+  }
+
+  let data: unknown;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error('Auth capabilities check returned a non-JSON response');
+  }
+
+  if (!data || typeof data !== 'object' || typeof (data as { enabled?: unknown }).enabled !== 'boolean') {
+    throw new Error('Auth capabilities response is missing enabled');
+  }
+
+  return { enabled: (data as { enabled: boolean }).enabled };
 }
 
 /** The resourceId under which a user's personal (non-factory) sessions live. */
@@ -116,6 +141,10 @@ export function signUpWithPassword(
 /**
  * Fetch the current auth state from `/auth/me`. When the route is missing (auth
  * disabled), reports `authEnabled: false` so the UI hides all auth affordances.
+ * Some static/self-hosted deployments route an absent `/auth/me` to the SPA
+ * document with HTTP 200; in that case only a valid capabilities response that
+ * explicitly says auth is disabled is accepted. Every other ambiguity fails
+ * closed.
  */
 export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState> {
   const res = await fetch(`${baseUrl}/auth/me`, { headers: { Accept: 'application/json' }, credentials: 'include' });
@@ -128,13 +157,25 @@ export async function fetchAuthState(baseUrl: string): Promise<FactoryAuthState>
   if (!res.ok) {
     throw new Error(`Auth check failed (${res.status})`);
   }
-  const data = (await res.json()) as {
+
+  let data: {
     authenticated?: boolean;
     telemetryEnabled?: boolean;
     user?: { userId?: string; email?: string; name?: string; organizationId?: string } | null;
     provider?: string;
     signUpDisabled?: boolean;
   };
+
+  try {
+    data = (await res.json()) as typeof data;
+  } catch {
+    const capabilities = await fetchAuthCapabilities(baseUrl);
+    if (!capabilities.enabled) {
+      return { authEnabled: false, authenticated: false };
+    }
+    throw new Error('Auth check returned a non-JSON response while authentication is enabled');
+  }
+
   return {
     authEnabled: true,
     authenticated: Boolean(data.authenticated),

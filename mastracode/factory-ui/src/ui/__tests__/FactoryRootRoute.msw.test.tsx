@@ -47,6 +47,32 @@ describe('Factory root route', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/factories/fp-1/work'));
   });
 
+  it('boots an auth-disabled local Factory when /auth/me falls through to the SPA document', async () => {
+    delete window.__MASTRACODE_CONFIG__;
+    server.use(
+      http.get(
+        `${TEST_BASE_URL}/auth/me`,
+        () =>
+          new HttpResponse('<!doctype html><html><body>Factory</body></html>', {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' },
+          }),
+      ),
+      http.get(`${TEST_BASE_URL}/api/auth/capabilities`, () => HttpResponse.json({ enabled: false, login: null })),
+      http.get(`${TEST_BASE_URL}/web/factory/projects`, () =>
+        HttpResponse.json({ projects: [{ id: 'fp-1', name: 'Local Factory' }] }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections`, () =>
+        HttpResponse.json({ connections: [] }),
+      ),
+      http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/work-items`, () => HttpResponse.json({ workItems: [] })),
+    );
+
+    const router = renderFactoryRoute();
+
+    await waitFor(() => expect(router.state.location.pathname).toBe('/factories/fp-1/work'));
+  });
+
   it('redirects the root route to onboarding when no factories exist', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/auth/me`, () =>
