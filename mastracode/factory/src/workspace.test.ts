@@ -1226,10 +1226,12 @@ describe('GitHub session workspace preparation', () => {
 
     expect(opened.id).toContain('project-1-session-a');
     expect(mocks.materializeRepo).toHaveBeenCalledWith(
-      expect.any(Object),
-      { GH_TOKEN: 'repo-token-repository-1' },
-      undefined,
-      expect.objectContaining({ actingUserId: 'local' }),
+      expect.objectContaining({
+        row: expect.objectContaining({
+          id: 'session-a',
+          sandboxWorkdir: path.join(root, 'session-a', 'hello'),
+        }),
+      }),
     );
   });
 
