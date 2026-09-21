@@ -424,6 +424,10 @@ const preparedArgs = await factory.prepare();
 // properties explicit so deploy builds can statically detect the worker topology.
 export const mastra = new Mastra({
   ...preparedArgs,
+  // Dell deployment: give in-flight requests and evented runs 10s to drain on
+  // SIGINT/SIGTERM. Worst case 10s HTTP + (10s + 5s) core teardown stays inside
+  // systemd TimeoutStopSec=30.
+  server: { ...preparedArgs.server, drainTimeout: 10_000 },
   storage: preparedArgs.storage,
   pubsub: preparedArgs.pubsub,
   workers: preparedArgs.workers,
