@@ -47,6 +47,29 @@ function escapeSkillBoundary(value: string): string {
   return value.replaceAll('</skill>', '&lt;/skill&gt;');
 }
 
+type StartableSandbox = { status?: string; start?: () => Promise<unknown> };
+
+/**
+ * Repository-local skills (`.agents/skills`, `.claude/skills`) live in the
+ * session checkout, which a lazily started sandbox has not materialized when a
+ * dispatcher kickoff resolves its skill — the workspace guards those roots so
+ * discovery alone never provisions. On a miss against an unstarted sandbox,
+ * start it (the kickoff is about to run there anyway), rescan once, and only
+ * then fail closed.
+ */
+async function findInvocableSkill(workspace: Workspace, name: string) {
+  const skills = workspace.skills;
+  if (!skills) return null;
+  await skills.maybeRefresh();
+  const skill = await skills.get(name);
+  if (skill) return skill;
+  const sandbox = workspace.sandbox as StartableSandbox | undefined;
+  if (!sandbox?.start || sandbox.status === 'running') return null;
+  await sandbox.start();
+  await skills.refresh();
+  return skills.get(name);
+}
+
 /** Kicks a run off from a plain prompt, for runs that activate no skill. */
 export async function resolvePromptInvocation(
   controller: Pick<AgentController<MastraCodeState>, 'getSessionByResource'>,
@@ -64,9 +87,7 @@ export async function resolveSkillInvocation(
   const session = (await controller.getSessionByResource(input.resourceId, input.scope)) as SkillSession | undefined;
   if (!session) throw new SkillInvocationError('session_not_found', 'Agent controller session not found.');
 
-  const skills = session.getWorkspace().skills;
-  await skills?.maybeRefresh();
-  const skill = await skills?.get(input.name);
+  const skill = await findInvocableSkill(session.getWorkspace(), input.name);
   if (!skill || skill['user-invocable'] === false) {
     throw new SkillInvocationError('skill_not_found', `Skill not found: ${input.name}.`);
   }
@@ -94,9 +115,7 @@ export async function resolveSkillResumeInvocation(
   const session = (await controller.getSessionByResource(input.resourceId, input.scope)) as SkillSession | undefined;
   if (!session) throw new SkillInvocationError('session_not_found', 'Agent controller session not found.');
 
-  const skills = session.getWorkspace().skills;
-  await skills?.maybeRefresh();
-  const skill = await skills?.get(input.name);
+  const skill = await findInvocableSkill(session.getWorkspace(), input.name);
   if (!skill || skill['user-invocable'] === false) {
     throw new SkillInvocationError('skill_not_found', `Skill not found: ${input.name}.`);
   }

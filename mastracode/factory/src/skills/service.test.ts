@@ -70,3 +70,51 @@ describe('resolveSkillResumeInvocation', () => {
     });
   });
 });
+
+describe('repository-local skills before sandbox materialization', () => {
+  const input = { resourceId: 'card-1', name: 'repo-skill', arguments: 'issue=3' };
+  const repoSkill = { name: 'repo-skill', instructions: 'Repository-local fixture skill.' };
+
+  function lazySession(options: { status: string; materializes: boolean }) {
+    let materialized = options.status === 'running';
+    const sandbox = {
+      status: options.status,
+      start: vi.fn(async () => {
+        sandbox.status = 'running';
+        materialized = options.materializes;
+      }),
+    };
+    const skills = {
+      maybeRefresh: vi.fn(async () => {}),
+      refresh: vi.fn(async () => {}),
+      get: vi.fn(async (name: string) => (materialized && name === repoSkill.name ? repoSkill : null)),
+    };
+    const session = { getWorkspace: () => ({ skills, sandbox }), sendMessage: vi.fn(async () => {}) };
+    return { controller: { getSessionByResource: vi.fn(async () => session as never) }, sandbox, skills };
+  }
+
+  it.each([
+    ['fresh', resolveSkillInvocation],
+    ['resume', resolveSkillResumeInvocation],
+  ] as const)('starts the unmaterialized sandbox and finds the skill (%s)', async (_label, resolve) => {
+    const { controller, sandbox, skills } = lazySession({ status: 'stopped', materializes: true });
+    const resolved = await resolve(controller, input);
+    expect(resolved.skillName).toBe('repo-skill');
+    expect(sandbox.start).toHaveBeenCalledTimes(1);
+    expect(skills.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start an already-running sandbox and still fails closed', async () => {
+    const { controller, sandbox } = lazySession({ status: 'running', materializes: false });
+    await expect(resolveSkillInvocation(controller, { ...input, name: 'missing' })).rejects.toMatchObject({
+      code: 'skill_not_found',
+    });
+    expect(sandbox.start).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the skill is absent after materialization', async () => {
+    const { controller, sandbox } = lazySession({ status: 'stopped', materializes: false });
+    await expect(resolveSkillInvocation(controller, input)).rejects.toMatchObject({ code: 'skill_not_found' });
+    expect(sandbox.start).toHaveBeenCalledTimes(1);
+  });
+});
