@@ -464,6 +464,45 @@ vi.mock('../utils/thread-lock.js', () => ({
   releaseThreadLock: vi.fn(),
 }));
 
+describe('prepareAgentControllerMount', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    controllerConstructorMock.mockClear();
+    createStorageMock.mockReset();
+    createStorageMock.mockReturnValue({ storage: {}, backend: 'memory' });
+    createVectorStoreMock.mockReset();
+    createVectorStoreMock.mockReturnValue({});
+    getDynamicMemoryMock.mockReset();
+    getDynamicMemoryMock.mockReturnValue(() => undefined);
+    getStorageConfigMock.mockReset();
+    getStorageConfigMock.mockReturnValue({ type: 'memory' });
+    getResourceIdOverrideMock.mockReset();
+    getResourceIdOverrideMock.mockReturnValue(undefined);
+    detectProjectMock.mockReset();
+    detectProjectMock.mockReturnValue({
+      mode: 'none',
+      resourceId: 'project-resource',
+      rootPath: '/tmp/project',
+      name: 'project',
+      gitBranch: undefined,
+    });
+  });
+
+  it('threads the controller observability instance into the server-owned Mastra args', async () => {
+    const { prepareAgentControllerMount } = await import('../index.js');
+
+    const prepared = await prepareAgentControllerMount();
+    const controllerConfig = controllerConstructorMock.mock.calls[0]?.[0] as
+      | { observability?: unknown }
+      | undefined;
+
+    expect(controllerConfig?.observability).toBeDefined();
+    expect((prepared.mastraArgs as { observability?: unknown }).observability).toBe(
+      controllerConfig?.observability,
+    );
+  });
+});
+
 describe('createMastraCode', () => {
   beforeEach(() => {
     vi.resetModules();
