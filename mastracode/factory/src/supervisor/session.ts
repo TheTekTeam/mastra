@@ -42,13 +42,16 @@ export function parseSupervisorResourceId(resourceId: string | undefined | null)
 export async function resolveSupervisorScope(options: {
   requestContext: RequestContext | undefined;
   projects: Pick<FactoryProjectsStorage, 'get'>;
+  /** Only the explicitly unauthenticated, single-tenant deployment may use local. */
+  authDisabled?: boolean;
 }): Promise<SupervisorScope | null> {
   const { requestContext } = options;
   if (!requestContext || typeof requestContext.get !== 'function') return null;
   const context = requestContext.get('controller') as AgentControllerRequestContext<MastraCodeState> | undefined;
   const factoryProjectId = parseSupervisorResourceId(context?.resourceId);
   if (!factoryProjectId) return null;
-  const orgId = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
+  const orgId =
+    options.authDisabled === true ? 'local' : getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (!orgId) return null;
   const project = await options.projects.get({ orgId, id: factoryProjectId });
   if (!project) return null;
