@@ -360,7 +360,8 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     const ctx = requestContext.get('controller') as AgentControllerRequestContext<MastraCodeState> | undefined;
     const supervisorProjectId = parseSupervisorResourceId(ctx?.resourceId);
     if (supervisorProjectId) {
-      const orgId = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
+      const orgId =
+        options.authDisabled === true ? 'local' : getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
       const project = orgId && projects ? await projects.get({ orgId, id: supervisorProjectId }) : null;
       if (!project) throw new Error(`Factory supervisor ${supervisorProjectId} is not available to the current user`);
       return undefined;
@@ -379,8 +380,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
 
     const user = getFactoryAuthUserFromContext(requestContext);
     const authenticatedUserId = getFactoryAuthUserId(user);
-    const localNoAuthSession =
-      options.authDisabled === true && session.orgId === 'local' && session.userId === 'local';
+    const localNoAuthSession = options.authDisabled === true && session.orgId === 'local' && session.userId === 'local';
     const callerOrgId = localNoAuthSession ? 'local' : user?.organizationId;
     const userId = localNoAuthSession ? 'local' : authenticatedUserId;
     // No identity at all is a server-side caller that forgot to seed one

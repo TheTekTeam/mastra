@@ -55,6 +55,30 @@ describe('resolveSupervisorScope', () => {
     ).resolves.toEqual({ orgId: 'org-1', factoryProjectId: project.id });
   });
 
+  it('allows only an explicitly auth-disabled local supervisor to resolve local-owned projects', async () => {
+    const { projects } = await createFactoryStorageForTests();
+    const project = await projects.create({
+      orgId: 'local',
+      userId: 'local',
+      input: { name: 'Local Factory' },
+    });
+    const context = requestContext({ resourceId: supervisorResourceId(project.id) });
+    context.delete('user');
+    await expect(
+      resolveSupervisorScope({
+        requestContext: context,
+        projects,
+        authDisabled: true,
+      }),
+    ).resolves.toEqual({ orgId: 'local', factoryProjectId: project.id });
+    await expect(
+      resolveSupervisorScope({
+        requestContext: context,
+        projects,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it('yields nothing for ordinary sessions, foreign orgs, or unknown projects', async () => {
     const { projects, project } = await seedProject();
     await expect(resolveSupervisorScope({ requestContext: requestContext(), projects })).resolves.toBeNull();

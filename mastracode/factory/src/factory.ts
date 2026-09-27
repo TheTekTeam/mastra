@@ -1045,9 +1045,13 @@ export class MastraFactory {
                   const supervisorScope = await resolveSupervisorScope({
                     requestContext,
                     projects: factoryProjectsStorage,
+                    authDisabled: auth === undefined,
                   });
                   if (supervisorScope) {
-                    const userId = getFactoryAuthUserId(getFactoryAuthUserFromContext(requestContext));
+                    const userId =
+                      auth === undefined
+                        ? 'local'
+                        : getFactoryAuthUserId(getFactoryAuthUserFromContext(requestContext));
                     mergeTools(
                       'factory-supervisor',
                       createFactorySupervisorReadTools({
