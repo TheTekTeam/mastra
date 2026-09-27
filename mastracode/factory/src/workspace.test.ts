@@ -901,6 +901,19 @@ describe('GitHub session workspace preparation', () => {
     expect(projects.get).toHaveBeenCalledWith({ orgId: 'org-1', id: 'project-1' });
   });
 
+  it('opens only local-owned supervisors in explicitly auth-disabled mode', async () => {
+    const projects = {
+      get: vi.fn(async ({ orgId }: { orgId: string }) => (orgId === 'local' ? { id: 'project-1', orgId } : null)),
+    };
+    const requestContext = createGithubRequestContext('project-1', 'factory-supervisor:project-1', {});
+    requestContext.delete('user');
+    const local = createWorkspaceFactory({ projects: projects as any, authDisabled: true });
+    await expect(local({ requestContext } as any)).resolves.toBeUndefined();
+    expect(projects.get).toHaveBeenCalledWith({ orgId: 'local', id: 'project-1' });
+    const authenticated = createWorkspaceFactory({ projects: projects as any });
+    await expect(authenticated({ requestContext } as any)).rejects.toThrow('not available to the current user');
+  });
+
   it('refuses a workspace-free supervisor session outside the caller organization', async () => {
     const projects = { get: vi.fn().mockResolvedValue(null) };
     const resolver = createWorkspaceFactory({ projects: projects as any });
