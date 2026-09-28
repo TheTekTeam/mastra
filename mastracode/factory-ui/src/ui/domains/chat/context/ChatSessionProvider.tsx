@@ -6,6 +6,7 @@ import { useParams } from 'react-router';
 
 import { useApiConfig } from '../../../../api/config';
 import { SkeletonRows } from '../../../ui/SkeletonRows';
+import { useAgentControllerSessionInit } from '../../../../hooks/useAgentControllerSessionInit';
 import { useAgentControllerThreadMessages } from '../../../../hooks/useAgentControllerThreadMessages';
 import { useFactoryQuery } from '../../../../hooks/useFactories';
 import { useUserSessionQuery } from '../../../../hooks/useWorkspaces';
@@ -176,19 +177,30 @@ export function ChatSessionBoundary({
   threadId?: string;
   deferUntilMessagesReady?: boolean;
 }) {
-  const { resourceId, resourceReady, projectPath, baseUrl } = useChatSessionContext();
+  const { resourceId, resourceReady, projectPath, baseUrl, factorySessionState } = useChatSessionContext();
+  // An uncreated deterministic Supervisor thread must be provisioned before its first history GET.
+  const supervisor = resourceId.startsWith('factory-supervisor:') && threadId === resourceId;
+  const supervisorInit = useAgentControllerSessionInit({
+    agentControllerId: AGENT_CONTROLLER_ID,
+    resourceId,
+    scope: projectPath,
+    sessionThreadId: supervisor ? threadId : undefined,
+    factorySessionState: supervisor ? factorySessionState : undefined,
+    baseUrl,
+    enabled: supervisor && resourceReady && Boolean(threadId),
+  });
   const messagesQuery = useAgentControllerThreadMessages({
     agentControllerId: AGENT_CONTROLLER_ID,
     resourceId,
     scope: projectPath,
     threadId,
     baseUrl,
-    enabled: resourceReady && Boolean(threadId),
+    enabled: resourceReady && (!supervisor || supervisorInit.isSuccess) && Boolean(threadId),
   });
   const messages = {
     threadId,
-    isPending: Boolean(threadId) && messagesQuery.isPending,
-    error: messagesQuery.isError ? messagesQuery.error : undefined,
+    isPending: Boolean(threadId) && ((supervisor && supervisorInit.isPending) || messagesQuery.isPending),
+    error: supervisor && supervisorInit.isError ? supervisorInit.error : messagesQuery.isError ? messagesQuery.error : undefined,
   };
 
   if (deferUntilMessagesReady && threadId && (messages.isPending || messages.error)) {

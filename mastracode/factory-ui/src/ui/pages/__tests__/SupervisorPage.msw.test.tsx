@@ -33,6 +33,8 @@ function report(findings: FactoryHealthReport['findings']): FactoryHealthReport 
 
 function stubSupervisorRoute(health: FactoryHealthReport) {
   const sessionCreates: string[] = [];
+  const prematureMessageReads: string[] = [];
+  const messageReads: string[] = [];
   server.use(
     http.get(`${TEST_BASE_URL}/auth/me`, () =>
       HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
@@ -47,6 +49,7 @@ function stubSupervisorRoute(health: FactoryHealthReport) {
     http.get(`${TEST_BASE_URL}/web/github/subscriptions`, () => HttpResponse.json({ subscriptions: [] })),
     http.post(`${AC}/sessions`, async ({ request }) => {
       const body = (await request.json()) as { resourceId?: string };
+      await new Promise(resolve => setTimeout(resolve, 30));
       sessionCreates.push(body.resourceId ?? '');
       return HttpResponse.json({ controllerId: 'code', resourceId: SUPERVISOR_ID, threadId: SUPERVISOR_ID });
     }),
@@ -70,10 +73,17 @@ function stubSupervisorRoute(health: FactoryHealthReport) {
     ),
     http.get(`${AC}/sessions/:resourceId/permissions`, () => HttpResponse.json({})),
     http.get(`${AC}/sessions/:resourceId/threads`, () => HttpResponse.json({ threads: [{ id: SUPERVISOR_ID }] })),
-    http.get(`${AC}/sessions/:resourceId/threads/:threadId/messages`, () => HttpResponse.json({ messages: [] })),
+    http.get(`${AC}/sessions/:resourceId/threads/:threadId/messages`, ({ params }) => {
+      messageReads.push(String(params.threadId));
+      if (!sessionCreates.includes(SUPERVISOR_ID)) {
+        prematureMessageReads.push(String(params.threadId));
+        return HttpResponse.json({ error: 'Thread not found' }, { status: 404 });
+      }
+      return HttpResponse.json({ messages: [] });
+    }),
     http.get(`${AC}/modes`, () => HttpResponse.json({ modes: [] })),
   );
-  return { sessionCreates };
+  return { sessionCreates, prematureMessageReads, messageReads };
 }
 
 function renderSupervisor(search = '') {
@@ -86,7 +96,7 @@ function renderSupervisor(search = '') {
 describe('SupervisorPage', () => {
   describe('when the factory has no health findings', () => {
     it('binds the chat to the deterministic supervisor session without a stored session row', async () => {
-      const { sessionCreates } = stubSupervisorRoute(report([]));
+      const { sessionCreates, prematureMessageReads, messageReads } = stubSupervisorRoute(report([]));
       renderSupervisor();
 
       expect(await screen.findByRole('region', { name: 'Supervisor composer' })).toBeInTheDocument();
@@ -94,6 +104,9 @@ describe('SupervisorPage', () => {
       expect(within(breadcrumb).queryByRole('link')).not.toBeInTheDocument();
       expect(within(breadcrumb).getByText('Supervisor')).toBeInTheDocument();
       await waitFor(() => expect(sessionCreates).toContain(SUPERVISOR_ID));
+      await waitFor(() => expect(messageReads).toContain(SUPERVISOR_ID));
+      expect(prematureMessageReads).toEqual([]);
+      expect(screen.queryByText(/Failed to load messages/)).not.toBeInTheDocument();
     });
 
     it('shows a healthy state in the findings panel', async () => {
