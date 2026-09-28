@@ -53,6 +53,23 @@ async function reviewArguments(headBranch: string): Promise<string> {
   return decision.arguments;
 }
 
+describe('Dell trusted PR Intake arrival policy', () => {
+  it.each([true, false])('only starts eligible newly materialized PRs: %s', async eligible => {
+    const base = reviewContext('feature/branch');
+    const context = {
+      ...base,
+      cause: 'linked_item_materialized',
+      stage: 'intake',
+      toStage: 'intake',
+      item: { ...base.item, stages: ['intake'], metadata: { ...base.item.metadata, autoStartCandidate: eligible } },
+    };
+    const result = await reviewBoard.rules.intake?.pullRequest?.onEnter?.(context);
+    if (eligible) expect(result).toMatchObject({ type: 'invokeSkill', skillName: 'factory-review' });
+    else expect(result).toBeUndefined();
+    expect(await reviewBoard.rules.intake?.pullRequest?.onEnter?.({ ...context, cause: 'test' })).toBeUndefined();
+  });
+});
+
 describe('reviewBoard', () => {
   it('keeps completed reviews terminal when the PR or MR is later closed without merging', () => {
     expect(reviewBoard.phases.done.outcomes).not.toHaveProperty('closed');

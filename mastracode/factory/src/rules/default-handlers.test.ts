@@ -129,10 +129,10 @@ function linearContext(): FactoryLinearRuleContext {
 
 describe('built-in board and integration handlers', () => {
   it('ships ordinary visible default leaves', () => {
-    expect(workBoard.rules.intake?.issue?.onEnter).toBeUndefined();
+    expect(workBoard.rules.intake?.issue?.onEnter).toBeTypeOf('function');
     expect(workBoard.rules.triage?.issue?.onEnter).toBeTypeOf('function');
     expect(workBoard.rules.done?.issue?.onEnter).toBeTypeOf('function');
-    expect(reviewBoard.rules.intake?.pullRequest?.onEnter).toBeUndefined();
+    expect(reviewBoard.rules.intake?.pullRequest?.onEnter).toBeTypeOf('function');
     expect(reviewBoard.rules.review?.pullRequest?.onEnter).toBeTypeOf('function');
     expect(workBoard.tools.submit_plan?.onResult).toBeTypeOf('function');
     expect(defaultGithubRules.issueOpened).toBeTypeOf('function');
@@ -1013,10 +1013,10 @@ describe('built-in board and integration handlers', () => {
     },
   );
 
-  it('does not run default arrival handlers from Work or Review Intake', () => {
-    expect(workBoard.rules.intake?.issue?.onEnter).toBeUndefined();
+  it('keeps the Dell trusted-arrival handlers separate from third-party Intake', () => {
+    expect(workBoard.rules.intake?.issue?.onEnter).toBeTypeOf('function');
     expect(workBoard.rules.intake?.gitlabIssue?.onEnter).toBeUndefined();
-    expect(reviewBoard.rules.intake?.pullRequest?.onEnter).toBeUndefined();
+    expect(reviewBoard.rules.intake?.pullRequest?.onEnter).toBeTypeOf('function');
     expect(reviewBoard.rules.intake?.gitlabPullRequest?.onEnter).toBeUndefined();
   });
 

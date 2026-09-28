@@ -31,6 +31,23 @@ function executeContext(source: FactoryRuleItemContext['source']): FactoryStageR
   };
 }
 
+describe('Dell trusted Intake arrival policy', () => {
+  it.each([true, false])('only allows eligible newly materialized issues: %s', async eligible => {
+    const base = executeContext('github-issue');
+    const context = {
+      ...base,
+      cause: 'linked_item_materialized',
+      stage: 'intake',
+      toStage: 'intake',
+      item: { ...base.item, stages: ['intake'], metadata: { autoStartCandidate: eligible } },
+    };
+    const result = await workBoard.rules.intake?.issue?.onEnter?.(context);
+    if (eligible) expect(result).toMatchObject({ type: 'invokeSkill', skillName: 'factory-triage' });
+    else expect(result).toBeUndefined();
+    expect(await workBoard.rules.intake?.issue?.onEnter?.({ ...context, cause: 'test' })).toBeUndefined();
+  });
+});
+
 describe('work board build prompt', () => {
   it('asks for a merge request for a GitLab issue', async () => {
     const decision = await workBoard.rules.execute?.gitlabIssue?.onEnter?.(executeContext('gitlab-issue'));

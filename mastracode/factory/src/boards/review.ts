@@ -87,6 +87,13 @@ function reviewPullRequest(context: FactoryStageRuleContext) {
   } as const;
 }
 
+/** Dell opt-in: only trusted eligible newly materialized PRs can start review. */
+function reviewPullRequestOnArrival(context: FactoryStageRuleContext) {
+  if (context.cause !== 'linked_item_materialized') return;
+  if (context.item.metadata?.autoStartCandidate !== true) return;
+  return reviewPullRequest(context);
+}
+
 export const reviewBoard = defineBoard({
   id: 'review',
   title: 'Review',
@@ -100,6 +107,7 @@ export const reviewBoard = defineBoard({
         merged: 'done',
         closed: 'canceled',
       },
+      onEnter: { pullRequest: reviewPullRequestOnArrival },
     },
     review: {
       title: 'Reviewing',
