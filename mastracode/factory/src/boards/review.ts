@@ -91,7 +91,12 @@ function reviewPullRequest(context: FactoryStageRuleContext) {
 function reviewPullRequestOnArrival(context: FactoryStageRuleContext) {
   if (context.cause !== 'linked_item_materialized') return;
   if (context.item.metadata?.autoStartCandidate !== true) return;
-  return reviewPullRequest(context);
+  return {
+    type: 'transition',
+    idempotencyKey: `${context.ingress.id}:trusted-intake-review`,
+    board: 'review',
+    stage: 'review',
+  } as const;
 }
 
 export const reviewBoard = defineBoard({

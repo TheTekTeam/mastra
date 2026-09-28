@@ -64,7 +64,7 @@ describe('Dell trusted PR Intake arrival policy', () => {
       item: { ...base.item, stages: ['intake'], metadata: { ...base.item.metadata, autoStartCandidate: eligible } },
     };
     const result = await reviewBoard.rules.intake?.pullRequest?.onEnter?.(context);
-    if (eligible) expect(result).toMatchObject({ type: 'invokeSkill', skillName: 'factory-review' });
+    if (eligible) expect(result).toMatchObject({ type: 'transition', board: 'review', stage: 'review' });
     else expect(result).toBeUndefined();
     expect(await reviewBoard.rules.intake?.pullRequest?.onEnter?.({ ...context, cause: 'test' })).toBeUndefined();
   });

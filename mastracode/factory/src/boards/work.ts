@@ -195,7 +195,17 @@ export const workBoard = defineBoard<'work', Record<WorkBoardPhase, BoardPhaseDe
       title: 'Intake',
       kind: 'resting',
       outcomes: allOtherPhases,
-      onEnter: { issue: onArrival(triageIssueEntry) },
+      onEnter: {
+        issue: onArrival(
+          context =>
+            ({
+              type: 'transition',
+              idempotencyKey: `${context.ingress.id}:trusted-intake-triage`,
+              board: 'work',
+              stage: 'triage',
+            }) as const,
+        ),
+      },
     },
     triage: {
       title: 'Triage',

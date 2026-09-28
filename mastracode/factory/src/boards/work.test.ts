@@ -42,7 +42,7 @@ describe('Dell trusted Intake arrival policy', () => {
       item: { ...base.item, stages: ['intake'], metadata: { autoStartCandidate: eligible } },
     };
     const result = await workBoard.rules.intake?.issue?.onEnter?.(context);
-    if (eligible) expect(result).toMatchObject({ type: 'invokeSkill', skillName: 'factory-triage' });
+    if (eligible) expect(result).toMatchObject({ type: 'transition', board: 'work', stage: 'triage' });
     else expect(result).toBeUndefined();
     expect(await workBoard.rules.intake?.issue?.onEnter?.({ ...context, cause: 'test' })).toBeUndefined();
   });

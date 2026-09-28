@@ -733,7 +733,7 @@ describe('GithubRules', () => {
     expect(await workItems.listDeferredDecisions('org-1', project.id)).toHaveLength(1);
   });
 
-  it('keeps a trusted post-Factory issue in Intake without queueing a run', async () => {
+  it('queues an explicit trusted Intake-to-Triage transition without starting a parallel run', async () => {
     const { github, sourceControl, integrationStorage, workItems, projects, project } = await setup('write');
     const configVersion = 'trusted-arrival-intake';
     const boards = createBoardRegistry();
@@ -761,8 +761,8 @@ describe('GithubRules', () => {
     const [item] = await workItems.list({ orgId: 'org-1', factoryProjectId: project.id });
     expect(item).toMatchObject({ stages: ['intake'], metadata: { authorTrusted: true, autoStartCandidate: true } });
     const decisions = await workItems.listDeferredDecisions('org-1', project.id);
-    expect(decisions).toHaveLength(1);
-    expect(decisions[0]?.decision.type).toBe('upsertLinkedWorkItem');
+    expect(decisions).toHaveLength(2);
+    expect(decisions.map(({ decision }) => decision.type)).toEqual(['upsertLinkedWorkItem', 'transition']);
     expect(decisions.some(({ decision }) => decision.type === 'invokeSkill')).toBe(false);
   });
 
@@ -916,8 +916,9 @@ describe('GithubRules', () => {
       }),
     ]);
     const deferredDecisions = await workItems.listDeferredDecisions('org-1', project.id);
-    expect(deferredDecisions).toHaveLength(2);
-    expect(deferredDecisions.map(decision => decision.status)).toEqual(['succeeded', 'succeeded']);
+    expect(deferredDecisions).toHaveLength(3);
+    expect(deferredDecisions.filter(({ decision }) => decision.type === 'transition')).toHaveLength(1);
+    expect(deferredDecisions.filter(({ decision }) => decision.type === 'invokeSkill')).toHaveLength(1);
     expect(
       deferredDecisions.filter(
         decision => decision.decision.type === 'invokeSkill' && decision.decision.skillName === 'factory-triage',
@@ -926,10 +927,9 @@ describe('GithubRules', () => {
 
     await workItems.delete({ orgId: 'org-1', id: item!.id });
     await expect(service.ingest(issueOpened('delivery-full-flow'))).resolves.toEqual({ status: 'committed' });
-    expect((await workItems.listDeferredDecisions('org-1', project.id)).map(decision => decision.status)).toEqual([
-      'succeeded',
-      'pending',
-    ]);
+    expect((await workItems.listDeferredDecisions('org-1', project.id)).some(
+      ({ decision, status }) => decision.type === 'upsertLinkedWorkItem' && status === 'pending',
+    )).toBe(true);
 
     await dispatcher.runOnce(new Date('2030-01-01T00:00:02Z'));
     const [rematerializedArrival] = await workItems.list({ orgId: 'org-1', factoryProjectId: project.id });
@@ -2436,7 +2436,7 @@ describe('GithubRules', () => {
     // The pull request still gets its own card, linked to that item.
     expect(cards.find(card => card.externalSource?.type === 'pull-request')).toMatchObject({
       board: 'review',
-      stages: ['intake'],
+      stages: ['review'],
       parentWorkItemId: work.item.id,
     });
   });
