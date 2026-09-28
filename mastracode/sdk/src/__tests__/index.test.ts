@@ -467,6 +467,8 @@ vi.mock('../utils/thread-lock.js', () => ({
 describe('prepareAgentControllerMount', () => {
   beforeEach(() => {
     vi.resetModules();
+    loadSettingsMock.mockReset();
+    loadSettingsMock.mockReturnValue(createMockSettings());
     controllerConstructorMock.mockClear();
     createStorageMock.mockReset();
     createStorageMock.mockReturnValue({ storage: {}, backend: 'memory' });
@@ -492,14 +494,10 @@ describe('prepareAgentControllerMount', () => {
     const { prepareAgentControllerMount } = await import('../index.js');
 
     const prepared = await prepareAgentControllerMount();
-    const controllerConfig = controllerConstructorMock.mock.calls[0]?.[0] as
-      | { observability?: unknown }
-      | undefined;
+    const controllerConfig = controllerConstructorMock.mock.calls[0]?.[0] as { observability?: unknown } | undefined;
 
     expect(controllerConfig?.observability).toBeDefined();
-    expect((prepared.mastraArgs as { observability?: unknown }).observability).toBe(
-      controllerConfig?.observability,
-    );
+    expect((prepared.mastraArgs as { observability?: unknown }).observability).toBe(controllerConfig?.observability);
   });
 });
 
