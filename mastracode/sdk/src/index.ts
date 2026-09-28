@@ -1715,6 +1715,7 @@ export async function prepareAgentControllerMount(
   const {
     controller,
     storage,
+    observability,
     authStorage,
     projectPath,
     codeAgent,
@@ -1736,6 +1737,8 @@ export async function prepareAgentControllerMount(
   const mastraArgs = {
     agentControllers: { [controllerId]: controller },
     storage,
+    // Retain the controller observability in parent Mastra on server mount.
+    observability,
     ...(backgroundToolsEnabled
       ? {
           backgroundTasks: {
