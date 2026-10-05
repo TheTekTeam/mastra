@@ -186,6 +186,14 @@ export class FactorySkillSource implements SkillSource {
     return (await this.#layerFor(relative)).readFile(relative);
   }
 
+  async #reservedSkillNames(): Promise<Set<string>> {
+    const names = new Set(FACTORY_SKILL_NAMES);
+    if (this.#localSource && (await this.#localSource.exists(''))) {
+      for (const entry of await this.#localSource.readdir('')) names.add(entry.name);
+    }
+    return names;
+  }
+
   async readdir(skillPath: string): Promise<SkillSourceEntry[]> {
     if (this.#isFactoryPath(skillPath)) {
       const relative = this.#factoryPath(skillPath);
@@ -209,7 +217,8 @@ export class FactorySkillSource implements SkillSource {
     }
     const entries = await this.fallback.readdir(skillPath);
     if (this.#fallbackSkillRoots.has(path.normalize(skillPath))) {
-      return entries.filter(entry => !FACTORY_SKILL_NAMES.has(entry.name));
+      const reservedSkillNames = await this.#reservedSkillNames();
+      return entries.filter(entry => !reservedSkillNames.has(entry.name));
     }
     return entries;
   }

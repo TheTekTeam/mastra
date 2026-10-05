@@ -3010,6 +3010,24 @@ describe('FactorySkillSource layering', () => {
     expect(plan).toContain('# Factory Plan');
   });
 
+  it('hides app-defined local Factory skill names from repository skill roots', async () => {
+    const localRoot = await makeLocalRoot({
+      'my-custom-skill': '---\ndescription: custom\n---\n# My Custom Skill\n',
+    });
+    const fallback = {
+      ...fallbackStub,
+      readdir: async () => [
+        { name: 'my-custom-skill', type: 'directory' },
+        { name: 'factory-plan', type: 'directory' },
+        { name: 'repo-only-skill', type: 'directory' },
+      ],
+    } as any;
+    const source = new FactorySkillSource(fallback, ['.agents/skills'], localRoot);
+
+    const names = (await source.readdir('.agents/skills')).map(entry => entry.name).sort();
+    expect(names).toEqual(['repo-only-skill']);
+  });
+
   it('behaves bundled-only when no local root exists', async () => {
     const source = new FactorySkillSource(fallbackStub, [], undefined);
     const names = (await source.readdir(mount)).map(entry => entry.name).sort();
