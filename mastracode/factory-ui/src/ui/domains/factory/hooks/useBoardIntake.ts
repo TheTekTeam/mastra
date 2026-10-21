@@ -35,7 +35,7 @@ import type { BoardStageId } from '../stages';
  * The Intake swimlane's feeds and the candidates left once anything already
  * on the board is dropped.
  *
- * Work Intake gates GitHub issues org-wide; the Review pull-request feed is
+ * Work Intake gates GitHub issues per Factory; the Review pull-request feed is
  * always enabled. Provider issues only appear on boards explicitly routed
  * to them, together on the board's initial phase.
  */
@@ -125,7 +125,7 @@ export function useBoardIntake({
   const repository = repositories[0];
   const projectRepositoryId = repository?.projectRepositoryId;
   const gitlabRepository = repository?.provider === 'gitlab';
-  const configQuery = useIntakeConfigQuery();
+  const configQuery = useIntakeConfigQuery(factoryProjectId);
   const linearStatusQuery = useLinearStatusQuery();
   const jiraStatusQuery = useJiraStatusQuery();
   const incidentioStatusQuery = useIncidentioStatusQuery();

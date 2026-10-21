@@ -269,7 +269,7 @@ export function buildPlatformJiraRoutes(options: MountJiraRoutesOptions): ApiRou
         }
 
         await intake.ensureReady();
-        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['jira'] });
+        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['jira'] });
         const selection = config.jira!;
         if (!selection.enabled) {
           return c.json({ error: 'jira_intake_disabled', message: 'Jira intake is turned off in Settings.' }, 404);
@@ -347,7 +347,7 @@ export function buildPlatformJiraRoutes(options: MountJiraRoutesOptions): ApiRou
         if (!issueRef || issueRef.length > 2_048) return c.json({ error: 'invalid_issue_ref' }, 400);
 
         await intake.ensureReady();
-        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['jira'] });
+        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['jira'] });
         const selection = config.jira!;
         if (!selection.enabled) {
           return c.json({ error: 'jira_intake_disabled', message: 'Jira intake is turned off in Settings.' }, 404);

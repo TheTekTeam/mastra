@@ -245,6 +245,7 @@ export class GitLabRules {
     const sourceId = encodeSourceId({ host, projectId: String(projectId) });
     const config = await this.options.intake.getConfig({
       orgId: target.target.orgId,
+      factoryProjectId: target.target.factoryProjectId,
       integrationIds: ['gitlab'],
     });
     if (!config.gitlab?.enabled || !config.gitlab.sourceIds?.includes(sourceId)) return { status: 'ignored' };

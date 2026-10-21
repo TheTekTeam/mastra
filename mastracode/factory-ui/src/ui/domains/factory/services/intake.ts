@@ -1,7 +1,7 @@
 /**
  * Browser-side helpers for the intake source configuration (Settings › Intake).
  *
- * The config is stored per org on the server. GitHub uses
+ * The config is stored per Factory (with an org-wide legacy fallback). GitHub uses
  * `sourceIds` (connected source ids); Linear keeps `sourceIds`
  * (provider-owned source ids). `null` id lists mean
  * "nothing selected" — nothing syncs until the user picks entries.
@@ -50,8 +50,13 @@ export function selectIntakeSource(selection: IntakeSelection, id: string): Inta
   return selection.enabled ? selection : { ...selection, enabled: true };
 }
 
-async function requestIntakeConfig(baseUrl: string, init?: RequestInit): Promise<IntakeConfig> {
-  const res = await fetch(`${baseUrl}/web/intake/config`, {
+async function requestIntakeConfig(
+  baseUrl: string,
+  factoryProjectId?: string,
+  init?: RequestInit,
+): Promise<IntakeConfig> {
+  const query = factoryProjectId ? `?factoryProjectId=${encodeURIComponent(factoryProjectId)}` : '';
+  const res = await fetch(`${baseUrl}/web/intake/config${query}`, {
     headers: { Accept: 'application/json', ...(init?.body ? { 'content-type': 'application/json' } : {}) },
     credentials: 'include',
     ...init,
@@ -71,14 +76,18 @@ async function requestIntakeConfig(baseUrl: string, init?: RequestInit): Promise
   return normalizeIntakeConfig(config);
 }
 
-/** Read the org's intake config (server falls back to the defaults). */
-export async function fetchIntakeConfig(baseUrl: string): Promise<IntakeConfig> {
-  return requestIntakeConfig(baseUrl);
+/** Read a Factory's intake config (legacy callers without a project read org defaults). */
+export async function fetchIntakeConfig(baseUrl: string, factoryProjectId?: string): Promise<IntakeConfig> {
+  return requestIntakeConfig(baseUrl, factoryProjectId);
 }
 
-/** Save the org's intake config; resolves to the persisted config. */
-export async function saveIntakeConfig(baseUrl: string, config: IntakeConfig): Promise<IntakeConfig> {
-  return requestIntakeConfig(baseUrl, { method: 'PUT', body: JSON.stringify(config) });
+/** Save a Factory's intake config; resolves to the persisted config. */
+export async function saveIntakeConfig(
+  baseUrl: string,
+  config: IntakeConfig,
+  factoryProjectId?: string,
+): Promise<IntakeConfig> {
+  return requestIntakeConfig(baseUrl, factoryProjectId, { method: 'PUT', body: JSON.stringify(config) });
 }
 
 /** Routing of one intake source to the Factory project its items land in. */

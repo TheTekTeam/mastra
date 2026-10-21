@@ -161,7 +161,7 @@ describe('useLinkRepositoryMutation', () => {
 
     const { client, result } = renderHookWithProviders(() => ({
       link: useLinkRepositoryMutation(),
-      intake: useIntakeConfigQuery(),
+      intake: useIntakeConfigQuery('fp-1'),
     }));
     await waitForMutationsIdle(client);
 
