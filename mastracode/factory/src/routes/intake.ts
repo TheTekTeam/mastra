@@ -453,8 +453,14 @@ export class IntakeRoutes extends Route<IntakeRoutesDeps> {
         handler: async c => {
           const tenant = await this.#resolveTenant(loose(c));
           if ('response' in tenant) return tenant.response;
+          const factoryProjectId = c.req.query('factoryProjectId');
+          if (factoryProjectId) {
+            if (!projects || !(await projects.get({ orgId: tenant.orgId, id: factoryProjectId }))) {
+              return c.json({ error: 'factory_project_not_found' }, 404);
+            }
+          }
           await intake.ensureReady();
-          const config = await intake.getConfig({ orgId: tenant.orgId, integrationIds });
+          const config = await intake.getConfig({ orgId: tenant.orgId, factoryProjectId, integrationIds });
           return c.json({ config });
         },
       }),
@@ -464,6 +470,12 @@ export class IntakeRoutes extends Route<IntakeRoutesDeps> {
         handler: async c => {
           const tenant = await this.#resolveTenant(loose(c));
           if ('response' in tenant) return tenant.response;
+          const factoryProjectId = c.req.query('factoryProjectId');
+          if (factoryProjectId) {
+            if (!projects || !(await projects.get({ orgId: tenant.orgId, id: factoryProjectId }))) {
+              return c.json({ error: 'factory_project_not_found' }, 404);
+            }
+          }
 
           let body: unknown;
           try {
@@ -488,12 +500,13 @@ export class IntakeRoutes extends Route<IntakeRoutesDeps> {
           }
 
           await intake.ensureReady();
-          await intake.saveConfig({ orgId: tenant.orgId, config: registeredConfig });
+          await intake.saveConfig({ orgId: tenant.orgId, factoryProjectId, config: registeredConfig });
           await audit.emit({
             context: loose(c),
             input: {
               action: 'factory.intake.config_updated',
-              targets: [{ type: 'intake_config', id: tenant.orgId }],
+              ...(factoryProjectId ? { factoryProjectId } : {}),
+              targets: [{ type: 'intake_config', id: factoryProjectId ?? tenant.orgId }],
               metadata: Object.fromEntries(
                 Object.entries(registeredConfig).map(([integrationId, selection]) => [
                   integrationId,
@@ -581,6 +594,7 @@ export class IntakeRoutes extends Route<IntakeRoutesDeps> {
               try {
                 const config = await intake.getConfig({
                   orgId: tenant.orgId,
+                  factoryProjectId: binding.factoryProjectId,
                   integrationIds: [binding.integrationId],
                 });
                 const configuredSourceIds = config[binding.integrationId]?.sourceIds ?? [];
@@ -738,11 +752,17 @@ export class IntakeRoutes extends Route<IntakeRoutesDeps> {
         handler: async c => {
           const tenant = await this.#resolveTenant(loose(c));
           if ('response' in tenant) return tenant.response;
+          const factoryProjectId = c.req.query('factoryProjectId');
+          if (factoryProjectId) {
+            if (!projects || !(await projects.get({ orgId: tenant.orgId, id: factoryProjectId }))) {
+              return c.json({ error: 'factory_project_not_found' }, 404);
+            }
+          }
           const cursors = decodeCursor(c.req.query('cursor'));
           if (!cursors) return c.json({ error: 'invalid_cursor' }, 400);
 
           await intake.ensureReady();
-          const config = await intake.getConfig({ orgId: tenant.orgId, integrationIds });
+          const config = await intake.getConfig({ orgId: tenant.orgId, factoryProjectId, integrationIds });
           const { pages, failures } = await settleByIntegration(
             integrations.flatMap(integration => {
               const selection = config[integration.id];

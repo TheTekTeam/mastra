@@ -152,6 +152,45 @@ describe('intake configuration', () => {
     ]);
   });
 
+  it('reads and writes Work Intake independently per Factory and rejects foreign projects', async () => {
+    const a = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'ModelSpend' } });
+    const b = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'HTAI' } });
+    const foreign = await seed.projects.create({ orgId: 'org2', userId: 'u9', input: { name: 'Other org' } });
+    const api = buildApp(orgUser);
+    const legacy = { github: { enabled: true, sourceIds: ['acme/modelspend', 'acme/htai'] } };
+    await seed.intake.saveConfig({ orgId: 'org1', config: legacy });
+
+    const forProject = (id: string) => `/web/intake/config?factoryProjectId=${encodeURIComponent(id)}`;
+    const modelspend = { github: { enabled: true, sourceIds: ['acme/modelspend'] } };
+    const htai = { github: { enabled: false, sourceIds: ['acme/htai'] } };
+    for (const [project, config] of [
+      [a, modelspend],
+      [b, htai],
+    ] as const) {
+      const put = await api.request(forProject(project.id), {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(config),
+      });
+      expect(put.status).toBe(200);
+    }
+    expect((await (await api.request(forProject(a.id))).json()).config.github).toEqual(modelspend.github);
+    expect((await (await api.request(forProject(b.id))).json()).config.github).toEqual(htai.github);
+    expect((await (await api.request('/web/intake/config')).json()).config.github).toEqual(legacy.github);
+
+    expect((await api.request(forProject(foreign.id))).status).toBe(404);
+    expect(
+      (
+        await api.request(forProject(foreign.id), {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(modelspend),
+        })
+      ).status,
+    ).toBe(404);
+    expect(await seed.intake.getConfig({ orgId: 'org2', factoryProjectId: foreign.id })).toEqual({});
+  });
+
   describe('source bindings', () => {
     const put = (body: unknown, user: typeof orgUser | null = orgUser) =>
       buildApp(user).request('/web/intake/bindings', {

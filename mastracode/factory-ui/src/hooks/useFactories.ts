@@ -94,15 +94,15 @@ export function useLinkRepositoryMutation() {
       const linked = await linkRepository(baseUrl, factoryProjectId, connectionId, linkableRepo);
       await onLinked?.(linked);
       try {
-        const config = await fetchIntakeConfig(baseUrl);
+        const config = await fetchIntakeConfig(baseUrl, factoryProjectId);
         if (gitlab) {
           const gitlabSelection = selectIntakeSource(config.gitlab, repo.id);
           if (gitlabSelection !== config.gitlab)
-            await saveIntakeConfig.mutateAsync({ ...config, gitlab: gitlabSelection });
+            await saveIntakeConfig.mutateAsync({ factoryProjectId, config: { ...config, gitlab: gitlabSelection } });
         } else {
           const githubSelection = selectIntakeSource(config.github, repo.fullName);
           if (githubSelection !== config.github)
-            await saveIntakeConfig.mutateAsync({ ...config, github: githubSelection });
+            await saveIntakeConfig.mutateAsync({ factoryProjectId, config: { ...config, github: githubSelection } });
         }
       } finally {
         invalidateFactories(queryClient);

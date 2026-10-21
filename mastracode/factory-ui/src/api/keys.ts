@@ -90,7 +90,7 @@ export const queryKeys = {
     [...queryKeys.incidentioIssuesAll(), factoryProjectId ?? null] as const,
   incidentioIssue: (factoryProjectId: string | undefined, issueRef: string | undefined) =>
     ['incidentio', 'issue', factoryProjectId ?? null, issueRef ?? null] as const,
-  intakeConfig: () => ['intake', 'config'] as const,
+  intakeConfig: (factoryProjectId?: string) => ['intake', 'config', factoryProjectId ?? null] as const,
   intakeBindings: () => ['intake', 'bindings'] as const,
   intakeLabelRoutes: (factoryProjectId: string | undefined) =>
     ['intake', 'label-routes', factoryProjectId ?? null] as const,

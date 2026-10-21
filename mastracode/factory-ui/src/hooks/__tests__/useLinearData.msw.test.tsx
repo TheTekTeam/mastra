@@ -218,6 +218,36 @@ describe('useIntakeConfigQuery / useSaveIntakeConfigMutation', () => {
     expect(putBody).toEqual(updated);
   });
 
+  it('scopes intake requests and cache writes to the selected Factory', async () => {
+    const modelspend: IntakeConfig = { ...config, github: { enabled: true, sourceIds: ['acme/modelspend'] } };
+    const htai: IntakeConfig = { ...config, github: { enabled: false, sourceIds: ['acme/htai'] } };
+    const saved: string[] = [];
+    server.use(
+      http.get(CONFIG_URL, ({ request }) => {
+        const projectId = new URL(request.url).searchParams.get('factoryProjectId');
+        return HttpResponse.json({ config: projectId === 'modelspend' ? modelspend : htai });
+      }),
+      http.put(CONFIG_URL, async ({ request }) => {
+        const projectId = new URL(request.url).searchParams.get('factoryProjectId');
+        saved.push(projectId ?? 'missing');
+        return HttpResponse.json({ config: await request.json() });
+      }),
+    );
+
+    const { result } = renderHookWithProviders(() => ({
+      a: useIntakeConfigQuery('modelspend'),
+      b: useIntakeConfigQuery('htai'),
+      save: useSaveIntakeConfigMutation('modelspend'),
+    }));
+    await waitFor(() => expect(result.current.a.data).toEqual(modelspend));
+    await waitFor(() => expect(result.current.b.data).toEqual(htai));
+
+    result.current.save.mutate({ ...modelspend, github: { enabled: false, sourceIds: null } });
+    await waitFor(() => expect(result.current.a.data?.github.enabled).toBe(false));
+    expect(result.current.b.data).toEqual(htai);
+    expect(saved).toEqual(['modelspend']);
+  });
+
   it('given the save fails, when it settles, then the mutation surfaces the server message', async () => {
     server.use(http.put(CONFIG_URL, () => HttpResponse.json({ error: 'invalid_config' }, { status: 400 })));
 

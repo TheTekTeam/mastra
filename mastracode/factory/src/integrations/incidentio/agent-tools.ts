@@ -58,7 +58,7 @@ async function routedSourceBoards(
 ): Promise<Record<string, string>> {
   const intake = incidentio.intakeStorage;
   await intake.ensureReady();
-  const config = await intake.getConfig({ orgId, integrationIds: ['incidentio'] });
+  const config = await intake.getConfig({ orgId, factoryProjectId, integrationIds: ['incidentio'] });
   const selection = config.incidentio;
   if (!selection?.enabled) return {};
   return scopeSourceIdsToProject({

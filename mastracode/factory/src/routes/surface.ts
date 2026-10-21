@@ -314,7 +314,11 @@ export async function prepareFactoryRuleBinding(
     // A retry may already own a role session. Check it before treating a
     // repository-less card as ambiguous, but never override an explicit signal.
     const boundSession = await reuseBoundSession(sourceControl, input);
-    const intakeConfig = await intake?.getConfig({ orgId: input.record.orgId, integrationIds: ['linear'] });
+    const intakeConfig = await intake?.getConfig({
+      orgId: input.record.orgId,
+      factoryProjectId: input.record.factoryProjectId,
+      integrationIds: ['linear'],
+    });
     let repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: input.record.orgId,

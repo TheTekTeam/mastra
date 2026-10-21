@@ -42,6 +42,37 @@ describe('IntakeStorage', () => {
     expect(await storage.getConfig({ orgId: 'org1' })).toEqual(updated);
   });
 
+  it('isolates Factory project overrides while preserving the legacy configuration', async () => {
+    const storage = await makeStorage();
+    const legacy = { github: { enabled: true, sourceIds: ['acme/modelspend', 'acme/htai'] } };
+    await storage.saveConfig({ orgId: 'org1', config: legacy });
+
+    // Existing Factories inherit the legacy selection until each is explicitly edited.
+    expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'modelspend' })).toEqual(legacy);
+    const modelspend = { github: { enabled: true, sourceIds: ['acme/modelspend'] } };
+    const htai = { github: { enabled: false, sourceIds: ['acme/htai'] } };
+    await storage.saveConfig({ orgId: 'org1', factoryProjectId: 'modelspend', config: modelspend });
+    await storage.saveConfig({ orgId: 'org1', factoryProjectId: 'htai', config: htai });
+
+    expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'modelspend' })).toEqual(modelspend);
+    expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'htai' })).toEqual(htai);
+    expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'unconfigured' })).toEqual(legacy);
+    expect(await storage.getConfig({ orgId: 'org1' })).toEqual(legacy);
+    expect(await storage.getConfig({ orgId: 'org2', factoryProjectId: 'modelspend' })).toEqual({});
+    expect(await storage.listSelectedSourceIds({ orgId: 'org1', integrationId: 'github' })).toEqual([
+      'acme/modelspend',
+      'acme/htai',
+    ]);
+    expect(await storage.listSelectedSourceIds({ orgId: 'org2', integrationId: 'github' })).toEqual([]);
+
+    await storage.saveConfig({
+      orgId: 'org1',
+      factoryProjectId: 'modelspend',
+      config: { github: { enabled: false, sourceIds: null } },
+    });
+    expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'htai' })).toEqual(htai);
+  });
+
   it('converges concurrent first saves onto one row', async () => {
     const storage = await makeStorage();
     const a = { github: { enabled: true, sourceIds: ['a'] } };
@@ -219,6 +250,11 @@ describe('IntakeStorage', () => {
         orgId: 'org1',
         config: { gitlab: { enabled: true, sourceIds: ['legacy-a', 'legacy-b', 'canonical'] } },
       });
+      await storage.saveConfig({
+        orgId: 'org1',
+        factoryProjectId: 'proj-1',
+        config: { gitlab: { enabled: true, sourceIds: ['legacy-a', 'canonical'] } },
+      });
       for (const sourceId of ['legacy-a', 'legacy-b']) {
         await storage.setBinding({
           orgId: 'org1',
@@ -240,6 +276,9 @@ describe('IntakeStorage', () => {
         }),
       ).resolves.toMatchObject({ conflicts: [] });
       expect(await storage.getConfig({ orgId: 'org1' })).toEqual({
+        gitlab: { enabled: true, sourceIds: ['canonical'] },
+      });
+      expect(await storage.getConfig({ orgId: 'org1', factoryProjectId: 'proj-1' })).toEqual({
         gitlab: { enabled: true, sourceIds: ['canonical'] },
       });
       expect(await storage.listBindings({ orgId: 'org1', integrationId: 'gitlab' })).toEqual([
