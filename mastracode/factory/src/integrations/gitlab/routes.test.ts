@@ -269,10 +269,7 @@ describe('GitLab UI routes', () => {
     ]);
     const intake = {
       ensureReady: vi.fn(),
-      getConfig: vi.fn().mockResolvedValue({
-        github: { enabled: false, sourceIds: null },
-        gitlab: { enabled: true, sourceIds: [legacyId, canonicalId] },
-      }),
+      listSelectedSourceIds: vi.fn().mockResolvedValue([legacyId, canonicalId]),
       listBindings: vi
         .fn()
         .mockResolvedValue([

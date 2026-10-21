@@ -12,12 +12,12 @@ import {
 } from '../ui/domains/factory/services/intake';
 import type { IntakeConfig } from '../ui/domains/factory/services/intake';
 
-/** The org's intake source configuration (Settings › Intake). */
-export function useIntakeConfigQuery(enabled: boolean = true) {
+/** A Factory's intake source configuration (Settings › Intake). */
+export function useIntakeConfigQuery(factoryProjectId?: string, enabled: boolean = true) {
   const { baseUrl } = useApiConfig();
   return useQuery({
-    queryKey: queryKeys.intakeConfig(),
-    queryFn: () => fetchIntakeConfig(baseUrl),
+    queryKey: queryKeys.intakeConfig(factoryProjectId),
+    queryFn: () => fetchIntakeConfig(baseUrl, factoryProjectId),
     enabled,
   });
 }
@@ -27,13 +27,17 @@ export function useIntakeConfigQuery(enabled: boolean = true) {
  * and the provider issue lists are invalidated — the server applies the
  * project selection, so a config change can alter their results.
  */
-export function useSaveIntakeConfigMutation() {
+export function useSaveIntakeConfigMutation(factoryProjectId?: string) {
   const { baseUrl } = useApiConfig();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (config: IntakeConfig) => saveIntakeConfig(baseUrl, config),
-    onSuccess: saved => {
-      queryClient.setQueryData(queryKeys.intakeConfig(), saved);
+    mutationFn: (input: IntakeConfig | { factoryProjectId: string; config: IntakeConfig }) =>
+      'config' in input
+        ? saveIntakeConfig(baseUrl, input.config, input.factoryProjectId)
+        : saveIntakeConfig(baseUrl, input, factoryProjectId),
+    onSuccess: (saved, input) => {
+      const target = 'config' in input ? input.factoryProjectId : factoryProjectId;
+      queryClient.setQueryData(queryKeys.intakeConfig(target), saved);
       void queryClient.invalidateQueries({ queryKey: queryKeys.linearIssuesAll() });
       void queryClient.invalidateQueries({ queryKey: queryKeys.jiraIssuesAll() });
     },

@@ -25,6 +25,14 @@ export function createFactory(storage: MastraFactoryConfig['storage']) {
 
 ## Documentation
 
+### Work Intake scope
+
+Work Intake source enablement and selections belong to a **Factory project**. In Settings → Work Intake, select the Factory before changing sources. Provider connections and credentials remain shared at organization scope; source-to-board bindings and GitHub label routes determine destinations. Review pull-request intake continues to follow linked repositories independently of issue selection.
+
+The browser uses `GET` and `PUT /web/intake/config?factoryProjectId=<project-id>`. The server validates that the project belongs to the authenticated organization and stores a separate selection for each `(org_id, factory_project_id)` pair. Existing `intake_org_settings` remain as defaults for projects that have not saved their own selection yet; the first project-specific save establishes its own configuration without changing other projects or existing cards. Legacy clients without a `factoryProjectId` can still use the organization route during migration. Provider issue-list endpoints with a Factory ID enforce that project's selected sources and current bindings.
+
+Migration is additive. Do not delete legacy settings or project overrides during a code-only rollback. A production release still needs a snapshot, two-project isolation checks, and a compatible recovery plan.
+
 A host application calls `MastraFactory.prepare()`, constructs its `Mastra` instance, and then calls `MastraFactory.finalize()`. The `new Mastra(...)` expression must remain in the host entry file so Mastra's deployer can detect and bundle it. The implementation in `mastracode/web/src/mastra/index.ts` is the canonical host example.
 
 `prepare()` initializes the Factory-owned resources needed before Mastra is constructed. `finalize()` connects those resources to the completed host, including Factory routes, integrations, storage-backed behavior, and agent-controller features. Consumers should keep frontend concerns in `factory-ui` and host-specific environment or deployment wiring in `web` rather than adding them to this package.

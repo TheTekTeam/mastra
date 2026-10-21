@@ -239,7 +239,7 @@ export function buildIncidentioRoutes(options: MountIncidentioRoutesOptions): Ap
         }
 
         await intake.ensureReady();
-        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['incidentio'] });
+        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['incidentio'] });
         const selection = config.incidentio!;
         if (!selection.enabled) {
           return c.json(
@@ -331,7 +331,7 @@ export function buildIncidentioRoutes(options: MountIncidentioRoutesOptions): Ap
         }
 
         await intake.ensureReady();
-        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['incidentio'] });
+        const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['incidentio'] });
         const selection = config.incidentio!;
         if (!selection.enabled) {
           return c.json(

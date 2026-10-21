@@ -39,7 +39,7 @@ export function useStartFactoryRun() {
   const { factoryId } = useParams<{ factoryId: string }>();
   const factoryQuery = useFactoryQuery(factoryId);
   const repositories = factoryQuery.data?.repositories ?? [];
-  const repositorySlugFor = useCardRepositorySlug(repositories);
+  const repositorySlugFor = useCardRepositorySlug(repositories, factoryId);
   const { baseUrl } = useApiConfig();
   const queryClient = useQueryClient();
 

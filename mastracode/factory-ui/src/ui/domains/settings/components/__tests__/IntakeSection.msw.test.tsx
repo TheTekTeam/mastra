@@ -384,6 +384,43 @@ function renderIntakeSection() {
 }
 
 describe('IntakeSection', () => {
+  beforeEach(() => seedFactories());
+
+  it("saves the selected Factory without changing another Factory's Work Intake", async () => {
+    useIntakeHandlers();
+    const byFactory = new Map<string, IntakeConfig>([
+      [FACTORY_A, { ...baseConfig(), github: { enabled: true, sourceIds: ['acme/web'] } }],
+      [FACTORY_B, { ...baseConfig(), github: { enabled: true, sourceIds: ['acme/api'] } }],
+    ]);
+    const saved: Array<{ factoryProjectId: string; config: IntakeConfig }> = [];
+    server.use(
+      http.get(CONFIG_URL, ({ request }) => {
+        const id = new URL(request.url).searchParams.get('factoryProjectId') ?? '';
+        return HttpResponse.json({ config: byFactory.get(id) });
+      }),
+      http.put(CONFIG_URL, async ({ request }) => {
+        const factoryProjectId = new URL(request.url).searchParams.get('factoryProjectId') ?? '';
+        const config = (await request.json()) as IntakeConfig;
+        saved.push({ factoryProjectId, config });
+        byFactory.set(factoryProjectId, config);
+        return HttpResponse.json({ config });
+      }),
+    );
+
+    renderIntakeSection();
+    const github = await screen.findByRole('switch', { name: 'Sync GitHub issues' });
+    expect(github).toBeChecked();
+    await userEvent.click(github);
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]?.factoryProjectId).toBe(FACTORY_A);
+    expect(saved[0]?.config.github.enabled).toBe(false);
+
+    await userEvent.click(screen.getByLabelText('Factory for Work Intake'));
+    await userEvent.click(await screen.findByRole('option', { name: 'Acme API' }));
+    expect(await screen.findByRole('switch', { name: 'Sync GitHub issues' })).toBeChecked();
+    expect(byFactory.get(FACTORY_B)?.github.sourceIds).toEqual(['acme/api']);
+    expect(saved).toHaveLength(1);
+  });
   describe('given a config with the default sources enabled', () => {
     it('lists every work intake source and expands the configured pickers', async () => {
       seedGithubProject();
@@ -1085,7 +1122,7 @@ describe('IntakeSection', () => {
       renderIntakeSection();
 
       const section = await screen.findByRole('region', { name: 'incident.io follow-ups' });
-      expect(within(section).getByRole('checkbox', { name: 'Incident follow-ups (acme)' })).toBeChecked();
+      expect(await within(section).findByRole('checkbox', { name: 'Incident follow-ups (acme)' })).toBeChecked();
       expect(within(section).queryByRole('checkbox', { name: 'Incidents (acme)' })).not.toBeInTheDocument();
       expect(within(section).getByText('Incident board configuration')).toBeInTheDocument();
       expect(within(section).getByText('Coming soon')).toBeInTheDocument();

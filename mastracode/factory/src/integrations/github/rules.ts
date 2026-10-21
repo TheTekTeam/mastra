@@ -295,7 +295,7 @@ export interface GithubRulesOptions {
    * Decides which installed board an issue lands on: a label route first, then the repository's
    * intake source binding. Absent means Work.
    */
-  intake?: Pick<IntakeStorage, 'listLabelRoutes' | 'listBindings'>;
+  intake?: Pick<IntakeStorage, 'getConfig' | 'listLabelRoutes' | 'listBindings'>;
   /** Hands a push to a linked repository off for an environment build. */
   onRepositoryPush?: IntegrationHooks['onRepositoryPush'];
 }
@@ -569,6 +569,25 @@ export class GithubRules {
     // card as the PR's Review card. A missing Review card is materialized below.
     const relatedItem =
       reviewEntryRequested && resolvedItem?.externalSource?.type !== 'pull-request' ? undefined : resolvedItem;
+    // A new GitHub issue must be selected by this Factory, not merely by some
+    // other Factory in the organization. Existing cards still receive lifecycle
+    // events when their source is later deselected; PR Review intake is separate.
+    if (event === 'issueOpened' && !relatedItem && this.options.intake) {
+      const config = await this.options.intake.getConfig({
+        orgId: project.orgId,
+        factoryProjectId: project.factoryProjectId,
+        integrationIds: ['github'],
+      });
+      const selection = config.github;
+      const selected = new Set((selection?.sourceIds ?? []).map(sourceId => sourceId.toLowerCase()));
+      if (
+        !selection?.enabled ||
+        (!selected.has(repositoryName.toLowerCase()) &&
+          !selected.has(project.projectRepository.repositoryId.toLowerCase()))
+      ) {
+        return { status: 'ignored' };
+      }
+    }
     const intake = issueNumber
       ? await this.#intakeTarget(project, repositoryName, labelNames(issue?.labels))
       : undefined;

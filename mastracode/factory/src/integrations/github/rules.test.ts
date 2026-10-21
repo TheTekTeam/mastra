@@ -3148,6 +3148,11 @@ describe('GithubRules label routes', () => {
   ) {
     const base = await setup('write');
     const intake = base.intake;
+    await intake.saveConfig({
+      orgId: 'org-1',
+      factoryProjectId: base.project.id,
+      config: { github: { enabled: true, sourceIds: ['acme/repo'] } },
+    });
     if (route) {
       await intake.setLabelRoute({
         orgId: 'org-1',
@@ -3193,6 +3198,18 @@ describe('GithubRules label routes', () => {
       stage: 'queued',
       metadata: expect.objectContaining({ labels: ['release'] }),
     });
+  });
+
+  it('does not materialize newly opened issues when this Factory disables intake', async () => {
+    const { service, workItems, project, intake } = await setupRoutes(undefined);
+    await intake.saveConfig({
+      orgId: 'org-1',
+      factoryProjectId: project.id,
+      config: { github: { enabled: false, sourceIds: ['acme/repo'] } },
+    });
+    await expect(service.ingest(issueOpened('disabled-factory-issue'))).resolves.toEqual({ status: 'ignored' });
+    expect(await workItems.list({ orgId: 'org-1', factoryProjectId: project.id })).toEqual([]);
+    expect(await workItems.listDeferredDecisions('org-1', project.id)).toEqual([]);
   });
 
   it('keeps unrouted issues on Work › Intake', async () => {

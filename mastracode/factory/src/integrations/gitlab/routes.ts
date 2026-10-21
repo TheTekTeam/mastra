@@ -105,11 +105,10 @@ async function reconcileGitLabSourceIdentity({
   sources: Array<{ id: string; metadata?: Record<string, unknown> }>;
 }): Promise<{ migrations: GitLabSourceIdentityMigration[]; conflicts: GitLabSourceIdentityMigration[] }> {
   await intake.ensureReady();
-  const [config, bindings] = await Promise.all([
-    intake.getConfig({ orgId }),
+  const [selected, bindings] = await Promise.all([
+    intake.listSelectedSourceIds({ orgId, integrationId: 'gitlab' }),
     intake.listBindings({ orgId, integrationId: 'gitlab' }),
   ]);
-  const selected = config.gitlab?.sourceIds ?? [];
   const canonicalByProject = new Map<string, string[]>();
   for (const source of sources) {
     const reference = decodeSourceId(source.id);
@@ -385,7 +384,7 @@ export function buildGitLabRoutes(options: BuildGitLabRoutesOptions): ApiRoute[]
           }
 
           await intake.ensureReady();
-          const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['gitlab'] });
+          const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['gitlab'] });
           const selection = config.gitlab!;
           if (!selection.enabled) {
             return c.json(
@@ -453,7 +452,7 @@ export function buildGitLabRoutes(options: BuildGitLabRoutesOptions): ApiRoute[]
             ? encodeSourceId({ host, projectId })
             : encodeSourceId({ connectionId, projectId, projectPath });
           await intake.ensureReady();
-          const config = await intake.getConfig({ orgId: resolved.tenant.orgId, integrationIds: ['gitlab'] });
+          const config = await intake.getConfig({ orgId: resolved.tenant.orgId, factoryProjectId, integrationIds: ['gitlab'] });
           const selection = config.gitlab!;
           const selected = new Set(selection.sourceIds ?? []);
           const routed =
