@@ -296,7 +296,7 @@ describe('useBoardIntake GitLab routing', () => {
 
     const { result, client } = renderIntake('factory-1', reviewBoard);
 
-    await waitFor(() => expect(client.getQueryState(queryKeys.intakeConfig())?.status).toBe('success'));
+    await waitFor(() => expect(client.getQueryState(queryKeys.intakeConfig('factory-1'))?.status).toBe('success'));
     await waitFor(() => expect(result.current.isPending).toBe(false));
     expect(gitlabStatusRequests).toBe(0);
   });
