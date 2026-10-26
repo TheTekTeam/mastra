@@ -60,10 +60,13 @@ export function useCreateFactoryFromDraft({
       factoryProjectId: input.factoryProjectId,
       board: input.board,
     });
-    const config = await fetchIntakeConfig(baseUrl);
+    const config = await fetchIntakeConfig(baseUrl, input.factoryProjectId);
     const selection = selectIntakeSource(config[input.integrationId], input.sourceId);
     if (selection === config[input.integrationId]) return;
-    await saveIntakeConfig.mutateAsync({ ...config, [input.integrationId]: selection });
+    await saveIntakeConfig.mutateAsync({
+      factoryProjectId: input.factoryProjectId,
+      config: { ...config, [input.integrationId]: selection },
+    });
   };
 
   return useMutation({

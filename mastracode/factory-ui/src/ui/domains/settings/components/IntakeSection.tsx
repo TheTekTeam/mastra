@@ -5,6 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from '@mastra/playgr
 import { Switch } from '@mastra/playground-ui/components/Switch';
 import { toast } from '@mastra/playground-ui/components/Toaster';
 import { Txt } from '@mastra/playground-ui/components/Txt';
+import { useState } from 'react';
 
 import { useApiConfig } from '../../../../api/config';
 import { SkeletonRows } from '../../../ui/SkeletonRows';
@@ -81,7 +82,7 @@ function GithubIntakeSection({
             ? 'GitHub is not configured on this server.'
             : !connected
               ? 'Connect GitHub to sync issues from this organization.'
-              : "Open issues from the selected repositories feed every member's board. Pull requests always appear in Review.";
+              : 'Open issues from the selected repositories feed this Factory. Pull requests always appear in Review.';
   const action = statusUnavailable ? (
     <Button size="sm" variant="ghost" disabled={statusRefetching} onClick={onRetryStatus}>
       Retry
@@ -89,7 +90,7 @@ function GithubIntakeSection({
   ) : undefined;
 
   return (
-    <SettingsSubsection scope="org" title="GitHub issues" description={description} action={action}>
+    <SettingsSubsection scope="factory" title="GitHub issues" description={description} action={action}>
       <SettingsContainer>
         <SettingsRow label="Sync GitHub issues">
           <Switch
@@ -159,7 +160,7 @@ function GitLabIntakeSection({
         ? platformManaged
           ? 'GitLab rejected a connected account. Reconnect it in Mastra Platform.'
           : 'GitLab rejected the configured access token. Ask the operator to check it.'
-        : "Open issues from the selected projects feed every member's board.";
+        : 'Open issues from the selected projects feed this Factory.';
   const accounts = status?.accounts ?? [];
   const action = configured ? (
     <Txt tone="muted" as="span" variant="caption">
@@ -168,7 +169,7 @@ function GitLabIntakeSection({
   ) : undefined;
 
   return (
-    <SettingsSubsection scope="org" title="GitLab issues" description={description} action={action}>
+    <SettingsSubsection scope="factory" title="GitLab issues" description={description} action={action}>
       <SettingsContainer>
         <SettingsRow label="Sync GitLab issues">
           <Switch
@@ -256,7 +257,7 @@ function LinearIntakeSection({
       ? 'Connect a Linear workspace to sync its issues.'
       : reauthRequired
         ? 'Linear authorization expired. Reconnect to keep syncing issues.'
-        : "Active issues from the selected projects and teams feed every member's board. Selecting a whole team also covers its projectless issues.";
+        : 'Active issues from selected projects and teams feed this Factory. Selecting a whole team also covers its projectless issues.';
 
   const action = !serverConfigured ? undefined : !connected ? (
     <Button size="sm" onClick={() => connectLinear(baseUrl)}>
@@ -278,7 +279,7 @@ function LinearIntakeSection({
   );
 
   return (
-    <SettingsSubsection scope="org" title="Linear issues" description={description} action={action}>
+    <SettingsSubsection scope="factory" title="Linear issues" description={description} action={action}>
       <SettingsContainer>
         <SettingsRow label="Sync Linear issues">
           <Switch
@@ -419,7 +420,7 @@ function JiraIntakeSection({
   );
 
   return (
-    <SettingsSubsection scope="org" title="Jira issues" description={description} action={action}>
+    <SettingsSubsection scope="factory" title="Jira issues" description={description} action={action}>
       <SettingsContainer>
         <SettingsRow label="Sync Jira issues">
           <Switch
@@ -482,7 +483,7 @@ function IncidentioIntakeSection({
     // org with incident.io connected silently loses its sync settings.
     return (
       <SettingsSubsection
-        scope="org"
+        scope="factory"
         title="incident.io follow-ups"
         description="Couldn't load incident.io connections."
         action={
@@ -524,7 +525,7 @@ function IncidentioIntakeSection({
   return (
     <>
       <SettingsSubsection
-        scope="org"
+        scope="factory"
         title="incident.io follow-ups"
         description={
           needsReauth && !directConfigured
@@ -589,7 +590,7 @@ function IncidentioIntakeSection({
       </SettingsSubsection>
       {config.incidentio.enabled && sourceIds.length > 0 && (
         <SettingsSubsection
-          scope="org"
+          scope="factory"
           title="incident.io routing"
           description="Choose which Factory and board should receive each follow-up source. Incidents remain unrouted."
         >
@@ -610,9 +611,14 @@ function IncidentioIntakeSection({
 
 export function IntakeSection() {
   const { baseUrl } = useApiConfig();
-  const configQuery = useIntakeConfigQuery();
-  const saveMutation = useSaveIntakeConfigMutation();
   const factoriesQuery = useFactoriesQuery();
+  const [selectedFactoryId, setSelectedFactoryId] = useState<string>();
+  const factories = factoriesQuery.data ?? [];
+  const selectedFactory = factories.find(factory => factory.id === selectedFactoryId) ?? factories[0];
+  const factoryProjectId = selectedFactory?.id;
+  const scopedFactories = selectedFactory ? [selectedFactory] : [];
+  const configQuery = useIntakeConfigQuery(factoryProjectId, Boolean(factoryProjectId));
+  const saveMutation = useSaveIntakeConfigMutation(factoryProjectId);
   const bindingsQuery = useIntakeBindingsQuery();
   const githubStatusQuery = useGithubStatusQuery();
   const githubConnected = githubStatusQuery.data?.connected === true;
@@ -636,12 +642,20 @@ export function IntakeSection() {
 
   const linkedSlugs = [
     ...new Set(
-      (factoriesQuery.data ?? []).flatMap(factory =>
+      scopedFactories.flatMap(factory =>
         factory.repositories.filter(repository => repository.provider !== 'gitlab').map(repository => repository.slug),
       ),
     ),
   ];
 
+  if (factoriesQuery.isPending) return <SkeletonRows label="Loading factories" rows={2} />;
+  if (!factoryProjectId) {
+    return (
+      <Txt tone="muted" as="p" variant="caption">
+        Create a Factory before configuring Work Intake.
+      </Txt>
+    );
+  }
   if (configQuery.isPending) {
     return <SkeletonRows label="Loading intake sources" rows={4} />;
   }
@@ -681,6 +695,24 @@ export function IntakeSection() {
 
   return (
     <div className="flex flex-col gap-8">
+      <SettingsContainer>
+        <SettingsRow label="Configure Work Intake for">
+          <Select value={factoryProjectId} disabled={busy} onValueChange={setSelectedFactoryId}>
+            <SelectTrigger size="sm" aria-label="Factory for Work Intake" className="w-auto">
+              <Txt as="span" variant="caption">
+                {selectedFactory.name}
+              </Txt>
+            </SelectTrigger>
+            <SelectContent>
+              {factories.map(factory => (
+                <SelectItem key={factory.id} value={factory.id}>
+                  {factory.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+      </SettingsContainer>
       <GithubIntakeSection
         config={config}
         busy={busy}
@@ -691,13 +723,13 @@ export function IntakeSection() {
         statusRefetching={githubStatusQuery.isFetching}
         onRetryStatus={() => void githubStatusQuery.refetch()}
       />
-      {githubConnected && config.github.enabled && linkedSlugs.length > 0 && (factoriesQuery.data?.length ?? 0) > 0 && (
+      {githubConnected && config.github.enabled && linkedSlugs.length > 0 && (
         <SettingsSubsection
-          scope="org"
+          scope="factory"
           title="GitHub routing"
           description="Issues carrying a routed label file onto that board in the Factory; everything else stays on Work."
         >
-          {(factoriesQuery.data ?? [])
+          {scopedFactories
             .filter(factory => factory.repositories.some(repository => repository.provider !== 'gitlab'))
             .map(factory => (
               <SettingsContainer key={factory.id}>
@@ -724,7 +756,7 @@ export function IntakeSection() {
       />
       {gitlabReady && gitlabSourceIds.length > 0 && (
         <SettingsSubsection
-          scope="org"
+          scope="factory"
           title="GitLab routing"
           description="Each selected project feeds one factory board. Until a project is fully routed, its issues are not picked up."
         >
@@ -734,7 +766,7 @@ export function IntakeSection() {
               label="GitLab"
               sourceIds={gitlabSourceIds}
               sources={gitlabProjects}
-              factories={factoriesQuery.data ?? []}
+              factories={scopedFactories}
             />
           </SettingsContainer>
         </SettingsSubsection>
@@ -750,12 +782,12 @@ export function IntakeSection() {
         reauthRequired={reauthRequired}
         showPickers={linearReady}
         baseUrl={baseUrl}
-        factories={factoriesQuery.data ?? []}
+        factories={scopedFactories}
         bindings={bindingsQuery.data ?? []}
       />
       {linearReady && routedProjectIds.length > 0 && (
         <SettingsSubsection
-          scope="org"
+          scope="factory"
           title="Linear routing"
           description="Each selected source feeds one factory. Until a source is routed, its issues are not picked up."
         >
@@ -764,7 +796,7 @@ export function IntakeSection() {
               sourceIds={routedProjectIds}
               projects={linearProjects}
               teams={linearTeams}
-              factories={factoriesQuery.data ?? []}
+              factories={scopedFactories}
             />
           </SettingsContainer>
         </SettingsSubsection>
@@ -781,7 +813,7 @@ export function IntakeSection() {
       />
       {jiraReady && jiraSourceIds.length > 0 && (
         <SettingsSubsection
-          scope="org"
+          scope="factory"
           title="Jira routing"
           description="Each selected project feeds one factory. Until a project is routed, its issues are not picked up."
         >
@@ -791,12 +823,12 @@ export function IntakeSection() {
               label="Jira"
               sourceIds={jiraSourceIds}
               sources={jiraProjects.map(project => ({ id: project.id, name: `${project.key} · ${project.name}` }))}
-              factories={factoriesQuery.data ?? []}
+              factories={scopedFactories}
             />
           </SettingsContainer>
         </SettingsSubsection>
       )}
-      <IncidentioIntakeSection config={config} busy={busy} update={update} factories={factoriesQuery.data ?? []} />
+      <IncidentioIntakeSection config={config} busy={busy} update={update} factories={scopedFactories} />
     </div>
   );
 }

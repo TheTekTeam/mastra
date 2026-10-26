@@ -181,7 +181,11 @@ export class FactoryStartCoordinator {
     const storedItem = request.workItem.id
       ? await storage.get({ orgId: request.orgId, id: request.workItem.id })
       : null;
-    const intakeConfig = await this.#intake?.getConfig({ orgId: request.orgId, integrationIds: ['linear'] });
+    const intakeConfig = await this.#intake?.getConfig({
+      orgId: request.orgId,
+      factoryProjectId: request.factoryProjectId,
+      integrationIds: ['linear'],
+    });
     let repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: request.orgId,
