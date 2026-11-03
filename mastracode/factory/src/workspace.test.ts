@@ -3056,6 +3056,32 @@ describe('GitHub session workspace preparation', () => {
       expect(mocks.materializeRepo).toHaveBeenCalledOnce();
     });
 
+    it('fails closed when the repository checkout onStart hook fails (#210)', async () => {
+      mocks.materializeRepo.mockRejectedValueOnce(new MaterializeError('exec', 'skill checkout failed'));
+      const { sandbox, controller, input } = await invocationFixture();
+      await expect(resolveSkillInvocation(controller as never, input)).rejects.toThrow();
+      expect(sandbox.start).toHaveBeenCalledOnce();
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed when the post-checkout skill refresh fails (#210)', async () => {
+      const { workspace, sandbox, controller, input } = await invocationFixture();
+      const refresh = vi.spyOn(workspace.skills!, 'refresh').mockRejectedValue(new Error('skill refresh failed'));
+      await expect(resolveSkillInvocation(controller as never, input)).rejects.toThrow('skill refresh failed');
+      expect(sandbox.start).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not start a lazy sandbox for an unauthorized unknown-skill invocation (#210)', async () => {
+      const { sandbox } = await invocationFixture(null);
+      const deniedController = { getSession: vi.fn(async () => undefined) };
+      await expect(
+        resolveSkillInvocation(deniedController as never, { sessionId: 'session-a', name: 'nonexistent-skill' }),
+      ).rejects.toMatchObject({ code: 'session_not_found' });
+      expect(sandbox.start).not.toHaveBeenCalled();
+      expect(mocks.materializeRepo).not.toHaveBeenCalled();
+    });
+
     it('starts only after the resolver finished, even when pinning state is slow', async () => {
       const resolver = await createFactory('eager');
       addProject();
