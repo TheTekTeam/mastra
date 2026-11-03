@@ -1,7 +1,9 @@
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -282,6 +284,62 @@ describe('automation-runs ingress', () => {
     } finally {
       seed = originalSeed;
       if (reopenedSeed) await reopenedSeed.storage.close();
+      if (!persistedClosed) await persistedSeed.storage.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  // #208: a fresh handler in the same Node process cannot prove OS-process durability.
+  it('reads the exact native receipt from a separate Node process after storage closes', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'factory-enqueue-process-'));
+    const url = `file:${join(directory, 'factory.db')}`;
+    const originalSeed = seed;
+    const persistedSeed = await createFactoryStorageForTests({ url, closeOnTestFinished: false });
+    let persistedClosed = false;
+    try {
+      seed = persistedSeed;
+      await seedProjectAndItem();
+      expect((await post(validBody({ arguments: '  cross-process private argument  ' }))).status).toBe(202);
+      const originalReceipt = await getReceipt();
+      expect(originalReceipt.status).toBe(200);
+      const expected = await originalReceipt.json();
+      await persistedSeed.storage.close();
+      persistedClosed = true;
+
+      // The child reads real persisted storage in a fresh PID without operator credentials.
+      const childScript = [
+        "import { LibSQLFactoryStorage } from '@mastra/libsql';",
+        "import { WorkItemsStorage } from './src/storage/domains/work-items/base.js';",
+        'const [url, orgId, projectId, requestId] = process.argv.slice(1);',
+        "const storage = new LibSQLFactoryStorage({ id: 'factory-restart-proof', url });",
+        'const workItems = storage.registerDomain(new WorkItemsStorage());',
+        'await storage.init();',
+        'try {',
+        '  const result = await workItems.getEnqueueReceipt(orgId, projectId, requestId);',
+        '  const decisions = await workItems.listDeferredDecisions(orgId, projectId);',
+        '  console.log(JSON.stringify({ pid: process.pid, result, decisionCount: decisions.length }));',
+        '} finally { await storage.close(); }',
+      ].join('\n');
+      const childOutput = execFileSync(
+        process.execPath,
+        ['--import', 'tsx', '--input-type=module', '--eval', childScript, url, 'org1', PROJECT_ID, REQUEST_ID],
+        {
+          cwd: fileURLToPath(new URL('../..', import.meta.url)),
+          encoding: 'utf8',
+          timeout: 20_000,
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: tmpdir(), NODE_ENV: 'test' },
+        },
+      ).trim();
+      const proof = JSON.parse(childOutput) as {
+        pid: number;
+        result: { kind: string; receipt?: unknown };
+        decisionCount: number;
+      };
+      expect(proof.pid).not.toBe(process.pid);
+      expect(proof.result).toEqual({ kind: 'found', receipt: expected });
+      expect(proof.decisionCount).toBe(1);
+    } finally {
+      seed = originalSeed;
       if (!persistedClosed) await persistedSeed.storage.close();
       await rm(directory, { recursive: true, force: true });
     }
