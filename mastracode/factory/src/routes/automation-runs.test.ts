@@ -308,16 +308,44 @@ describe('automation-runs ingress', () => {
 
       // The child reads real persisted storage in a fresh PID without operator credentials.
       const childScript = [
+        "import { Hono } from 'hono';",
         "import { LibSQLFactoryStorage } from '@mastra/libsql';",
         "import { WorkItemsStorage } from './src/storage/domains/work-items/base.js';",
+        "import { FactoryProjectsStorage } from './src/storage/domains/projects/base.js';",
+        "import { AuditStorage } from './src/storage/domains/audit/base.js';",
+        "import { AuditDomain } from './src/storage/domains/audit/domain.js';",
+        "import { AutomationRunRoutes } from './src/routes/automation-runs.js';",
+        "import { fakeRouteAuth, mountApiRoutes } from './src/routes/test-utils.js';",
         'const [url, orgId, projectId, requestId] = process.argv.slice(1);',
         "const storage = new LibSQLFactoryStorage({ id: 'factory-restart-proof', url });",
         'const workItems = storage.registerDomain(new WorkItemsStorage());',
+        'const projects = storage.registerDomain(new FactoryProjectsStorage());',
+        'const auditStore = storage.registerDomain(new AuditStorage());',
         'await storage.init();',
         'try {',
         '  const result = await workItems.getEnqueueReceipt(orgId, projectId, requestId);',
         '  const decisions = await workItems.listDeferredDecisions(orgId, projectId);',
-        '  console.log(JSON.stringify({ pid: process.pid, result, decisionCount: decisions.length }));',
+        '  const makeApp = (user, isAdmin = true) => {',
+        '    const app = new Hono();',
+        '    app.use("*", async (c, next) => { if (user) c.set("factoryAuthUser", user); await next(); });',
+        '    const auth = fakeRouteAuth({ isOrganizationAdmin: async () => isAdmin });',
+        '    const audit = new AuditDomain({ auth, audit: auditStore, projects });',
+        '    mountApiRoutes(app, new AutomationRunRoutes({',
+        '      auth, audit, projects, workItems, configVersion: "factory-config-v1"',
+        '    }).routes());',
+        '    return app;',
+        '  };',
+        '  const path = "/web/factory/projects/" + projectId + "/automation-runs/" + requestId;',
+        '  const allowed = await makeApp({ workosId: "u1", organizationId: orgId }).request(path);',
+        '  const anonymous = await makeApp(null).request(path);',
+        '  const nonAdmin = await makeApp({ workosId: "u1", organizationId: orgId }, false).request(path);',
+        '  const foreignTenant = await makeApp({ workosId: "u2", organizationId: "foreign-org" }).request(path);',
+        '  const http = {',
+        '    status: allowed.status, receipt: allowed.status === 200 ? await allowed.json() : null,',
+        '    anonymousStatus: anonymous.status, nonAdminStatus: nonAdmin.status,',
+        '    foreignTenantStatus: foreignTenant.status',
+        '  };',
+        '  console.log(JSON.stringify({ pid: process.pid, result, decisionCount: decisions.length, http }));',
         '} finally { await storage.close(); }',
       ].join('\n');
       const childOutput = execFileSync(
@@ -334,10 +362,24 @@ describe('automation-runs ingress', () => {
         pid: number;
         result: { kind: string; receipt?: unknown };
         decisionCount: number;
+        http: {
+          status: number;
+          receipt: unknown;
+          anonymousStatus: number;
+          nonAdminStatus: number;
+          foreignTenantStatus: number;
+        };
       };
       expect(proof.pid).not.toBe(process.pid);
       expect(proof.result).toEqual({ kind: 'found', receipt: expected });
       expect(proof.decisionCount).toBe(1);
+      expect(proof.http).toEqual({
+        status: 200,
+        receipt: expected,
+        anonymousStatus: 401,
+        nonAdminStatus: 403,
+        foreignTenantStatus: 404,
+      });
     } finally {
       seed = originalSeed;
       if (!persistedClosed) await persistedSeed.storage.close();
