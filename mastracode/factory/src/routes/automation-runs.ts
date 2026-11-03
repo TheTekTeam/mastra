@@ -311,11 +311,9 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             resolved.factoryProjectId,
             parsedPath.data.requestId,
           );
+          if (result.kind === 'found') return c.json(result.receipt);
           if (result.kind === 'missing') return c.json({ error: 'Enqueue receipt not found' }, 404);
-          if (result.kind === 'ambiguous') {
-            return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
-          }
-          return c.json(result.receipt);
+          return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
         },
       }),
     ];

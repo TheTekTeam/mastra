@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -241,6 +244,49 @@ describe('automation-runs ingress', () => {
     expect(await listDecisions()).toHaveLength(1);
   });
 
+  // #208: a new process must be able to prove the exact committed enqueue
+  // from durable storage after the original LibSQL connection is gone.
+  it('preserves the native enqueue receipt across a file-backed database reopen', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'factory-enqueue-receipt-'));
+    const url = `file:${join(directory, 'factory.db')}`;
+    const originalSeed = seed;
+    const persistedSeed = await createFactoryStorageForTests({ url, closeOnTestFinished: false });
+    let persistedClosed = false;
+    let reopenedSeed: FactoryStorageTestSeed | undefined;
+    try {
+      seed = persistedSeed;
+      await seedProjectAndItem();
+      expect((await post(validBody({ arguments: '  persisted private argument  ' }))).status).toBe(202);
+      const effectId = (await listDecisions())[0]!.id;
+      const expected = {
+        projectId: PROJECT_ID,
+        requestId: REQUEST_ID,
+        workItemId: WORK_ITEM_ID,
+        role: 'work',
+        skillName: 'factory-plan',
+        argumentsSha256: createHash('sha256').update(JSON.stringify('persisted private argument')).digest('hex'),
+        expectedRevision: 1,
+        nativeEffectId: effectId,
+        decisionStatus: 'pending',
+      };
+
+      await persistedSeed.storage.close();
+      persistedClosed = true;
+      reopenedSeed = await createFactoryStorageForTests({ url, closeOnTestFinished: false });
+      seed = reopenedSeed;
+      const response = await getReceipt();
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual(expected);
+      expect((await post(validBody({ arguments: '  persisted private argument  ' }))).status).toBe(200);
+      expect(await listDecisions()).toHaveLength(1);
+    } finally {
+      seed = originalSeed;
+      if (reopenedSeed) await reopenedSeed.storage.close();
+      if (!persistedClosed) await persistedSeed.storage.close();
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it('never reveals a receipt to unauthenticated, non-admin, or cross-project callers', async () => {
     await seedProjectAndItem();
     expect((await post(validBody())).status).toBe(202);
@@ -281,5 +327,4 @@ describe('automation-runs ingress', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ requestId: REQUEST_ID, projectId: PROJECT_ID });
   });
-
 });
