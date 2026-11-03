@@ -6,6 +6,7 @@ on:
   pull_request:
     branches:
       - ci/factory-0.25-free-docs-runner-20261103
+      - ci/factory-0.25-trusted-quality-gate-20261103
     types:
       - opened
       - reopened
