@@ -175,6 +175,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
   routes(): ApiRoute[] {
     const { workItems, configVersion } = this.deps;
     const contract = FACTORY_ROUTE_CONTRACTS.workItemAutomationRun;
+    const receiptContract = FACTORY_ROUTE_CONTRACTS.automationRunReceipt;
 
     return [
       registerApiRoute(contract.path, {
@@ -290,6 +291,31 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             { status: 'rejected', ...(code ? { code } : {}), requestId: request.requestId },
             code === 'stale' ? 409 : 422,
           );
+        },
+      }),
+      registerApiRoute(receiptContract.path, {
+        method: receiptContract.method,
+        handler: async c => {
+          const context = loose(c);
+          const resolved = await this.#resolveProject(context);
+          if ('response' in resolved) return resolved.response;
+
+          const parsedPath = receiptContract.pathSchema.safeParse({
+            id: c.req.param('id'),
+            requestId: c.req.param('requestId'),
+          });
+          if (!parsedPath.success) return c.json({ error: 'Enqueue receipt not found' }, 404);
+
+          const result = await workItems.getEnqueueReceipt(
+            resolved.orgId,
+            resolved.factoryProjectId,
+            parsedPath.data.requestId,
+          );
+          if (result.kind === 'missing') return c.json({ error: 'Enqueue receipt not found' }, 404);
+          if (result.kind === 'ambiguous') {
+            return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
+          }
+          return c.json(result.receipt);
         },
       }),
     ];
