@@ -311,7 +311,15 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             resolved.factoryProjectId,
             parsedPath.data.requestId,
           );
-          if (result.kind === 'found') return c.json(result.receipt);
+          if (result.kind === 'found') {
+            // Revalidate the persisted binding at the wire boundary. A damaged
+            // but hash-consistent row must not become a successful receipt.
+            const validated = receiptContract.responseSchema.safeParse(result.receipt);
+            if (!validated.success || validated.data.skillName !== result.receipt.skillName) {
+              return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
+            }
+            return c.json(validated.data);
+          }
           if (result.kind === 'missing') return c.json({ error: 'Enqueue receipt not found' }, 404);
           return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
         },

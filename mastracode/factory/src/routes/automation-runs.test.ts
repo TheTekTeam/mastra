@@ -9,6 +9,7 @@ import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuditDomain } from '../storage/domains/audit/domain.js';
+import { factoryDecisionHash } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import type { FactoryStorageTestSeed } from '../storage/test-utils.js';
 import { AutomationRunRoutes } from './automation-runs.js';
@@ -71,6 +72,25 @@ const listDecisions = () => seed.workItems.listDeferredDecisions('org1', PROJECT
 const listDecisionsLocal = () => seed.workItems.listDeferredDecisions('local', PROJECT_ID);
 
 const REQUEST_ID = '11111111-1111-4111-8111-111111111111';
+
+async function persistedReceiptRows() {
+  const ingress = await seed.storage.ops.findOne('factory_rule_ingress', {
+    org_id: 'org1',
+    factory_project_id: PROJECT_ID,
+    identity: `external-orchestrator:${REQUEST_ID}`,
+  });
+  if (!ingress) throw new Error('Expected persisted ingress');
+  const evaluation = await seed.storage.ops.findOne('factory_rule_evaluations', {
+    ingress_id: ingress.id,
+  });
+  if (!evaluation) throw new Error('Expected persisted evaluation');
+  const effect = await seed.storage.ops.findOne('factory_deferred_decisions', {
+    evaluation_id: evaluation.id,
+    idempotency_key: `external-orchestrator:${REQUEST_ID}`,
+  });
+  if (!effect) throw new Error('Expected persisted effect');
+  return { ingress, evaluation, effect };
+}
 
 const validBody = (overrides: Record<string, unknown> = {}) => ({
   requestId: REQUEST_ID,
@@ -418,6 +438,158 @@ describe('automation-runs ingress', () => {
       await ops.deleteMany('factory_deferred_decisions', { id: decision.id });
     });
     expect((await getReceipt()).status).toBe(409);
+  });
+
+  it.each([
+    { name: 'wrong ingress trigger type', table: 'factory_rule_ingress', patch: { trigger_type: 'other-event' } },
+    { name: 'rejected evaluation', table: 'factory_rule_evaluations', patch: { outcome: 'rejected' } },
+    {
+      name: 'evaluation work-item mismatch',
+      table: 'factory_rule_evaluations',
+      patch: { work_item_id: '22222222-2222-4222-8222-222222222222' },
+    },
+    { name: 'revision mismatch', table: 'factory_rule_evaluations', patch: { expected_revision: 2 } },
+    {
+      name: 'deferred effect work-item mismatch',
+      table: 'factory_deferred_decisions',
+      patch: { work_item_id: '22222222-2222-4222-8222-222222222222' },
+    },
+    { name: 'unexpected effect ordinal', table: 'factory_deferred_decisions', patch: { effect_ordinal: 1 } },
+    { name: 'effect hash mismatch', table: 'factory_deferred_decisions', patch: { effect_hash: '0'.repeat(64) } },
+    {
+      name: 'non-system effect actor',
+      table: 'factory_deferred_decisions',
+      patch: { actor: { type: 'user', id: 'u1' } },
+    },
+    { name: 'unknown decision status', table: 'factory_deferred_decisions', patch: { status: 'unknown' } },
+  ] as const)('fails closed on $name without creating another effect', async ({ table, patch }) => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const rows = await persistedReceiptRows();
+    const target =
+      table === 'factory_rule_ingress'
+        ? rows.ingress
+        : table === 'factory_rule_evaluations'
+          ? rows.evaluation
+          : rows.effect;
+    await seed.storage.ops.updateMany(table, { id: target.id }, patch);
+    const response = await getReceipt();
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'Enqueue receipt not independently verifiable' });
+    expect(await listDecisions()).toHaveLength(1);
+  });
+
+  it.each([
+    { field: 'role', value: 'triage' },
+    { field: 'skillName', value: 'factory-triage' },
+  ])('rejects a deferred effect $field that disagrees with the committed decision', async ({ field, value }) => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const { effect } = await persistedReceiptRows();
+    const decision = effect.decision as Record<string, unknown>;
+    await seed.storage.ops.updateMany(
+      'factory_deferred_decisions',
+      { id: effect.id },
+      { decision: { ...decision, [field]: value } },
+    );
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('rejects a committed ingress decision that disagrees with its deferred effect', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const { ingress } = await persistedReceiptRows();
+    const result = ingress.result as Record<string, unknown> & { decisions: Record<string, unknown>[] };
+    await seed.storage.ops.updateMany(
+      'factory_rule_ingress',
+      { id: ingress.id },
+      {
+        result: { ...result, decisions: [{ ...result.decisions[0]!, role: 'triage' }] },
+      },
+    );
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('rejects duplicate native evaluations for one accepted ingress', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const { ingress, evaluation } = await persistedReceiptRows();
+    await seed.storage.ops.insertOne('factory_rule_evaluations', {
+      ingress_id: ingress.id,
+      work_item_id: WORK_ITEM_ID,
+      rule_set_version: evaluation.rule_set_version,
+      expected_revision: 1,
+      outcome: 'accepted',
+      code: null,
+      reason: null,
+      causal_chain: [],
+      created_at: new Date(),
+    });
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('database uniqueness prevents a duplicate matching deferred effect', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const { evaluation } = await persistedReceiptRows();
+    await expect(
+      seed.storage.ops.insertOne('factory_deferred_decisions', {
+        org_id: 'org1',
+        factory_project_id: PROJECT_ID,
+        evaluation_id: evaluation.id,
+        work_item_id: WORK_ITEM_ID,
+        idempotency_key: `external-orchestrator:${REQUEST_ID}`,
+        effect_ordinal: 1,
+        effect_hash: '0'.repeat(64),
+        causal_chain: [],
+        decision: { type: 'invokeSkill', role: 'work', skillName: 'factory-plan' },
+        status: 'pending',
+        attempts: 0,
+        available_at: new Date(),
+        created_at: new Date(),
+        updated_at: new Date(),
+      }),
+    ).rejects.toThrow();
+    expect((await getReceipt()).status).toBe(200);
+    expect(await listDecisions()).toHaveLength(1);
+  });
+
+  it.each([
+    { name: 'unsupported role', patch: { role: 'ghost' } },
+    { name: 'oversized skill name', patch: { skillName: 'x'.repeat(129) } },
+  ])('rejects a hash-consistent but schema-invalid $name at the HTTP boundary', async ({ patch }) => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const { ingress, effect } = await persistedReceiptRows();
+    const result = ingress.result as Record<string, unknown> & { decisions: Record<string, unknown>[] };
+    const decision = { ...result.decisions[0]!, ...patch };
+    await seed.storage.ops.updateMany(
+      'factory_rule_ingress',
+      { id: ingress.id },
+      {
+        result: { ...result, decisions: [decision] },
+      },
+    );
+    await seed.storage.ops.updateMany(
+      'factory_deferred_decisions',
+      { id: effect.id },
+      {
+        decision,
+        effect_hash: factoryDecisionHash(decision),
+      },
+    );
+    expect((await seed.workItems.getEnqueueReceipt('org1', PROJECT_ID, REQUEST_ID)).kind).toBe('found');
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('keeps receipt GET read-only without appending audit or deferred-decision records', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const beforeAudit = await listAudit('org1');
+    const beforeDecisions = await listDecisions();
+    expect((await getReceipt()).status).toBe(200);
+    expect(await listAudit('org1')).toEqual(beforeAudit);
+    expect(await listDecisions()).toEqual(beforeDecisions);
   });
 
   it('reads the same scoped receipt in local no-auth mode', async () => {
