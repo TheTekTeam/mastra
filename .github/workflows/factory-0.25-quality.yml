@@ -1,0 +1,94 @@
+name: Factory 0.25 Exact-Head Quality
+
+# Dedicated fork-safe CI. Upstream Changed Test Gate intentionally skips
+# repositories other than mastra-ai/mastra; this check executes PR-head code.
+on:
+  pull_request:
+    branches:
+      - ci/factory-0.25-free-docs-runner-20261103
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - 'mastracode/factory/**'
+      - '.changeset/**'
+      - '.github/workflows/factory-0.25-quality.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-0.25-quality-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  factory-exact-head:
+    name: Factory 0.25 exact-head build, typecheck, lint and tests
+    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == 'TheTekTeam/mastra' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      NODE_OPTIONS: --max-old-space-size=8192
+      TURBO_CACHE: local:rw
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 15
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Verify exact head identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'Exact PR head: %s\n' "$EXPECTED_HEAD"
+
+      - name: Setup pinned Node and pnpm
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+          package-manager-cache: 'false'
+
+      - name: Install frozen Factory dependency closure
+        timeout-minutes: 12
+        run: pnpm install --frozen-lockfile --filter '@mastra/factory...' --ignore-scripts
+
+      - name: Build Factory dependency graph
+        timeout-minutes: 22
+        run: pnpm turbo build --filter='@mastra/factory^...' --concurrency=2
+
+      - name: Build Factory package
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory build:lib
+
+      - name: Factory TypeScript check
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory exec tsc --noEmit -p tsconfig.json
+
+      - name: Factory type-aware lint
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory exec oxlint --type-aware .
+
+      - name: Factory receipt, skill and dispatcher regressions
+        timeout-minutes: 12
+        run: |
+          pnpm --filter @mastra/factory exec vitest run \
+            src/routes/automation-runs.test.ts \
+            src/workspace.test.ts \
+            src/workspace-skills.test.ts \
+            src/skills/service.test.ts \
+            src/routes/skills.test.ts \
+            src/rules/dispatcher.test.ts \
+            src/rules/dispatch-errors.test.ts \
+            --reporter=dot --maxWorkers=1
