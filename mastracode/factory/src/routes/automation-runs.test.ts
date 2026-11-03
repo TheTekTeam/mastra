@@ -257,10 +257,11 @@ describe('automation-runs ingress', () => {
     expect((await getReceipt('not-a-uuid')).status).toBe(404);
   });
 
-  it('never certifies rejected or incomplete native effects', async () => {
+  it('returns missing, not proof of a durable effect, for an uncommitted stale request', async () => {
     await seedProjectAndItem();
     expect((await post(validBody({ expectedRevision: 999 }))).status).toBe(409);
-    expect((await getReceipt()).status).toBe(409);
+    // A stale ingress deliberately persists nothing, so native readback must be 404.
+    expect((await getReceipt()).status).toBe(404);
   });
 
   it('fails closed when an accepted ingress loses its durable effect record', async () => {
