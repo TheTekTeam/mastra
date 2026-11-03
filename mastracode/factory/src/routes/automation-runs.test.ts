@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -47,6 +49,16 @@ function post(body: unknown, user: typeof orgUser | null = orgUser, options = {}
   return buildApp(user, options).request(path, {
     method: 'POST',
     ...(body !== undefined ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}),
+  });
+}
+
+function getReceipt(
+  requestId = REQUEST_ID,
+  user: typeof orgUser | null = orgUser,
+  options: { enabled?: boolean; isOrganizationAdmin?: (orgId: string, userId: string) => Promise<boolean> } = {},
+) {
+  return buildApp(user, options).request(`/web/factory/projects/${PROJECT_ID}/automation-runs/${requestId}`, {
+    method: 'GET',
   });
 }
 
@@ -194,4 +206,79 @@ describe('automation-runs ingress', () => {
     expect(res.status).toBe(404);
     expect(await listDecisions()).toHaveLength(0);
   });
+  // #208: a 202 response cannot prove which work item/skill was committed.
+  // The independent supervisor needs a durable native identity read after ingress.
+  it('reads back the exact committed enqueue binding without disclosing arguments', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody({ arguments: '  private operator argument  ' }))).status).toBe(202);
+    const effect = (await listDecisions())[0]!;
+    const response = await getReceipt();
+    expect(response.status).toBe(200);
+    const receipt = await response.json();
+    expect(receipt).toEqual({
+      projectId: PROJECT_ID,
+      requestId: REQUEST_ID,
+      workItemId: WORK_ITEM_ID,
+      role: 'work',
+      skillName: 'factory-plan',
+      argumentsSha256: createHash('sha256').update(JSON.stringify('private operator argument')).digest('hex'),
+      expectedRevision: 1,
+      nativeEffectId: effect.id,
+      decisionStatus: 'pending',
+    });
+    expect(JSON.stringify(receipt)).not.toContain('private operator argument');
+  });
+
+  it('survives replay and a fresh HTTP handler without creating a second effect', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const first = await getReceipt();
+    expect(first.status).toBe(200);
+    expect((await post(validBody())).status).toBe(200);
+    const next = await getReceipt();
+    expect(next.status).toBe(200);
+    expect(await next.json()).toEqual(await first.json());
+    expect(await listDecisions()).toHaveLength(1);
+  });
+
+  it('never reveals a receipt to unauthenticated, non-admin, or cross-project callers', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    expect((await getReceipt(REQUEST_ID, null)).status).toBe(401);
+    expect((await getReceipt(REQUEST_ID, orgUser, { isOrganizationAdmin: async () => false })).status).toBe(403);
+    const other = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'Separate project' } });
+    PROJECT_ID = other.id;
+    expect((await getReceipt()).status).toBe(404);
+  });
+
+  it('returns 404 for unknown requests and malformed receipt identities', async () => {
+    await seedProjectAndItem();
+    expect((await getReceipt()).status).toBe(404);
+    expect((await getReceipt('not-a-uuid')).status).toBe(404);
+  });
+
+  it('never certifies rejected or incomplete native effects', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody({ expectedRevision: 999 }))).status).toBe(409);
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('fails closed when an accepted ingress loses its durable effect record', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const decision = (await listDecisions())[0]!;
+    await seed.storage.withTransaction(async ops => {
+      await ops.deleteMany('factory_deferred_decisions', { id: decision.id });
+    });
+    expect((await getReceipt()).status).toBe(409);
+  });
+
+  it('reads the same scoped receipt in local no-auth mode', async () => {
+    await seedProjectAndItem('local');
+    expect((await post(validBody(), null, { enabled: false })).status).toBe(202);
+    const res = await getReceipt(REQUEST_ID, null, { enabled: false });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ requestId: REQUEST_ID, projectId: PROJECT_ID });
+  });
+
 });
