@@ -22,6 +22,20 @@ async function scenario(url?: string) {
   const project = await seed.projects.create({
     orgId: 'verified-org', userId: 'gp-admin', input: { name: 'HTAI pilot' },
   });
+  await seed.storage.ops.insertOne('service_capability_handover_leases', {
+    org_id: 'verified-org',
+    project_id: project.id,
+    owner_kind: 'factory-project-manager',
+    owner_epoch: 'test-epoch',
+    automation_revision: project.automationRevision,
+    pm_dispatch_paused_at: new Date('2029-12-31T23:58:00Z'),
+    native_automation_paused_at: new Date('2029-12-31T23:59:00Z'),
+    native_sessions_drained_at: new Date('2029-12-31T23:59:30Z'),
+    evidence_digest: 'e'.repeat(64),
+    issued_at: new Date('2030-01-01T00:00:00Z'),
+    expires_at: new Date('2030-01-01T01:00:00Z'),
+    revoked_at: null,
+  });
   const policy: ServiceCapabilityPolicy = {
     enabled: true,
     hmacKey: randomBytes(32),
