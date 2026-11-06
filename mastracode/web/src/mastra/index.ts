@@ -166,8 +166,10 @@ if (authDisabled) {
 } else if (workosConfigured) {
   auth = new MastraAuthWorkos({ fetchMemberships: true });
 } else if (process.env.BETTER_AUTH_SECRET?.trim()) {
-  // Preserve the established self-hosted operator login when upgrading Factory.
-  auth = new MastraAuthBetterAuth({ secret: process.env.BETTER_AUTH_SECRET, signUpEnabled: true });
+  // Restore self-hosted operator sign-in without silently allowing new users.
+  // An owner-managed environment opt-in is required for email registration.
+  const signUpEnabled = process.env.MASTRACODE_BETTER_AUTH_SIGNUP_ENABLED === 'true';
+  auth = new MastraAuthBetterAuth({ secret: process.env.BETTER_AUTH_SECRET, signUpEnabled });
 }
 const secretEncryption = auth === null ? undefined : credentialEncryption();
 

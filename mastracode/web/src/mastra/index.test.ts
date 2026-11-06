@@ -40,6 +40,7 @@ describe('platform entry (src/mastra/index.ts)', () => {
       'WORKOS_CLIENT_ID',
       'WORKOS_COOKIE_PASSWORD',
       'BETTER_AUTH_SECRET',
+      'MASTRACODE_BETTER_AUTH_SIGNUP_ENABLED',
       'MASTRA_SHARED_API_URL',
       'MASTRA_PLATFORM_SECRET_KEY',
       'MASTRA_PLATFORM_ACCESS_TOKEN',
@@ -519,6 +520,19 @@ describe('platform entry (src/mastra/index.ts)', () => {
       const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
       expect(paths).toContain('/auth/api/*');
       expect(factoryConfigs.at(-1)?.auth?.constructor.name).toBe('MastraAuthBetterAuth');
+      expect(factoryConfigs.at(-1)?.auth).toHaveProperty('signUpEnabledConfig', false);
+    });
+
+    it.each([
+      ['true', true],
+      ['TRUE', false],
+      ['1', false],
+    ])('requires exact owner opt-in for new email signups (%s)', { timeout: 60_000 }, async (setting, allowed) => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'disposable-test-only-secret-at-least-32-characters');
+      vi.stubEnv('MASTRACODE_BETTER_AUTH_SIGNUP_ENABLED', setting);
+      await import('./index.js');
+      expect(factoryConfigs.at(-1)?.auth?.constructor.name).toBe('MastraAuthBetterAuth');
+      expect(factoryConfigs.at(-1)?.auth).toHaveProperty('signUpEnabledConfig', allowed);
     });
 
     it('does not turn on Better Auth when the secret is blank', { timeout: 60_000 }, async () => {

@@ -129,4 +129,6 @@ jobs:
           set -euo pipefail
           pnpm --dir mastracode/web install --frozen-lockfile --ignore-scripts
           pnpm --dir mastracode/web run prebuild
+          pnpm --dir mastracode/web run build
+          test -s mastracode/web/.mastra/output/mastra.mjs
           pnpm --dir mastracode/web exec vitest run src/mastra/index.test.ts --reporter=dot --maxWorkers=1
