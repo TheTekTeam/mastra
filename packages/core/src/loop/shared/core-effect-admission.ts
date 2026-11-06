@@ -8,7 +8,11 @@
  * enable enforcement or count as a trusted Factory run identity.
  */
 export const CORE_EFFECT_ADMISSION_PROTOCOL_VERSION = 1 as const;
-export type CoreEffectBoundary = 'model-provider-request' | 'shared-native-tool-execute';
+export type CoreEffectBoundary =
+  | 'model-provider-request'
+  | 'shared-native-tool-execute'
+  | 'legacy-model-provider-request'
+  | 'legacy-native-tool-execute';
 
 export class CoreEffectAdmissionDeniedError extends Error {
   constructor(boundary: CoreEffectBoundary, reason = 'trusted epoch/run admission unavailable') {
@@ -20,7 +24,12 @@ export class CoreEffectAdmissionDeniedError extends Error {
 /** Explicitly partial coverage; it must never be advertised as adoption-safe. */
 export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
   version: CORE_EFFECT_ADMISSION_PROTOCOL_VERSION,
-  boundaries: ['model-provider-request', 'shared-native-tool-execute'] as const,
+  boundaries: [
+    'model-provider-request',
+    'shared-native-tool-execute',
+    'legacy-model-provider-request',
+    'legacy-native-tool-execute',
+  ] as const,
   nativeSourceResolverInstalled: false,
   managerLeaseInstalled: false,
   comprehensiveExecutionCoverage: false,
