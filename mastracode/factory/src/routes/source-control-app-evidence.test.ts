@@ -57,7 +57,8 @@ async function fixture() {
 
 type Variant = 'positive' | 'revoked' | 'repo-id-drift' | 'wrong-closing-repo' |
   'head-drift' | 'incomplete-threads' | 'ambiguous-checks' |
-  'grant-removed' | 'grant-lost-after' | 'grant-oversized';
+  'grant-removed' | 'grant-lost-after' | 'grant-oversized' |
+  'repo-rename' | 'owner-transfer';
 
 function fakeGithub(mode: Variant = 'positive') {
   let repoReads = 0;
@@ -88,7 +89,8 @@ function fakeGithub(mode: Variant = 'positive') {
             if (mode === 'revoked') throw Object.assign(new Error('forbidden'), { status: 403 });
             return { data: {
               id: mode === 'repo-id-drift' ? 9999 : 9988,
-              full_name: REPO, owner: { id: 765 },
+              full_name: mode === 'repo-rename' ? 'OtherOrg/HTAI' : REPO,
+              owner: { id: mode === 'owner-transfer' ? 766 : 765 },
             } };
           },
         },
@@ -246,6 +248,7 @@ describe('project-scoped live GitHub App evidence GET', () => {
     'revoked', 'repo-id-drift', 'wrong-closing-repo',
     'head-drift', 'incomplete-threads', 'ambiguous-checks',
     'grant-removed', 'grant-lost-after', 'grant-oversized',
+    'repo-rename',
   ] as const)('fails closed on %s and returns no raw upstream response', async variant => {
     const seed = await fixture();
     try {
@@ -387,6 +390,7 @@ describe('project-wide authenticated GitHub App binding GET', () => {
 
   it.each([
     'revoked','repo-id-drift','grant-removed','grant-lost-after','grant-oversized',
+    'repo-rename','owner-transfer',
   ] as const)('denies %s even if public repo remains readable',async mode => {
     const seed=await fixture();
     try {

@@ -1682,12 +1682,12 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
         "expectedLinkId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 128
+          "maxLength": 160
         },
         "expectedConnectionId": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 128
+          "maxLength": 160
         },
         "expectedAutomationRevision": {
           "type": "string",

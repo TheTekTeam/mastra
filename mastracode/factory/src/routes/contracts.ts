@@ -513,8 +513,8 @@ export const FACTORY_ROUTE_CONTRACTS = {
       expectedRepositoryId: numericQuery(1),
       expectedOwnerId: numericQuery(1),
       expectedInstallationId: numericQuery(1),
-      expectedLinkId: z.string().min(1).max(128),
-      expectedConnectionId: z.string().min(1).max(128),
+      expectedLinkId: z.string().min(1).max(160),
+      expectedConnectionId: z.string().min(1).max(160),
       expectedAutomationRevision: numericQuery(0),
     }).strict(),
     responseSchema: z.object({
