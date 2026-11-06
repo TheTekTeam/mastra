@@ -109,6 +109,17 @@ jobs:
         timeout-minutes: 8
         run: pnpm --filter @mastra/factory build:lib
 
+      - name: Verify B2b public declarations exclude dev-only PG package
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          declaration=mastracode/factory/dist/storage/domains/execution-origin/reconcile.d.ts
+          test -s "$declaration"
+          if grep -n -F '@mastra/pg' "$declaration"; then
+            echo '::error::Factory public B2b declarations reference dev-only @mastra/pg'
+            exit 1
+          fi
+
       - name: Verify deterministic generated Factory CLI route metadata
         timeout-minutes: 3
         run: |
