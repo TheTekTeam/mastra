@@ -14,6 +14,8 @@ import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage
 import type { CollectionSchema, CollectionWhere, FactoryStorageOps } from '@mastra/core/storage';
 import { factoryDispatchFailureMetadata } from '../../../rules/dispatch-errors.js';
 import { externalSourceForWorkItem } from '../../../rules/types.js';
+import { parseIssueCompletionReceipt } from './completion-evidence.js';
+import type { IssueCompletionReceipt } from './completion-evidence.js';
 import type { FactoryTriageType, WorkItemSource } from '../../../rules/types.js';
 import {
   WORK_ITEM_ACTIVITY_SCHEMA,
@@ -997,7 +999,35 @@ function ingressWasAccepted(row: GovernanceDbRow | null): boolean {
   return 'status' in row.result && row.result.status === 'accepted';
 }
 
+/** No HTTP writer exists: only a separately accepted independent attestor may
+ * persist a candidate. This unique org/project/work-item row is read through
+ * a transaction and independently verified at the authenticated route.
+ */
+const FACTORY_ISSUE_COMPLETION_EVIDENCE_SCHEMA: CollectionSchema = {
+  name: 'factory_issue_completion_evidence',
+  columns: {
+    id: { type: 'uuid-pk' },
+    org_id: { type: 'text' },
+    factory_project_id: { type: 'text' },
+    work_item_id: { type: 'text' },
+    work_item_revision: { type: 'integer' },
+    proof: { type: 'json' },
+    proof_digest: { type: 'text' },
+    created_at: { type: 'timestamp' },
+  },
+  uniqueIndexes: [{
+    name: 'factory_issue_completion_tenant_item_unique',
+    columns: ['org_id', 'factory_project_id', 'work_item_id'],
+  }],
+};
+
+export type FactoryIssueCompletionLookup =
+  | { kind: 'missing' }
+  | { kind: 'ambiguous' }
+  | { kind: 'found'; receipt: IssueCompletionReceipt };
+
 const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
+  FACTORY_ISSUE_COMPLETION_EVIDENCE_SCHEMA,
   {
     name: 'factory_rule_ingress',
     columns: {
@@ -2219,6 +2249,79 @@ export class WorkItemsStorage extends FactoryStorageDomain {
    * alone is not proof of a skill dispatch: only exactly one internally
    * consistent accepted binding produces a receipt. This never starts work.
    */
+  /**
+   * Candidate final GitHub issue evidence. Storage is necessary but NEVER
+   * sufficient: the HTTP route must separately verify live GitHub App/HP6/CI,
+   * merge and source snapshot on the exact bound revision. A terminal phase
+   * alone does not prove code execution or independent acceptance.
+   *
+   * Absent or stale candidates are fail-closed; no route persists evidence.
+   */
+  async getIssueCompletionEvidence(
+    orgId: string,
+    factoryProjectId: string,
+    workItemId: string,
+  ): Promise<FactoryIssueCompletionLookup> {
+    return this.storage.withTransaction<FactoryIssueCompletionLookup>(async ops => {
+      const item = await ops.findOne<WorkItemDbRow>('work_items', {
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+        id: workItemId,
+      });
+      if (!item) return { kind: 'missing' };
+      const rows = await ops.findMany<{
+        org_id: string;
+        factory_project_id: string;
+        work_item_id: string;
+        work_item_revision: number;
+        proof: unknown;
+        proof_digest: string;
+      }>('factory_issue_completion_evidence', {
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+        work_item_id: workItemId,
+      }, { limit: 2 });
+      if (rows.length === 0) return { kind: 'missing' };
+      if (rows.length !== 1) return { kind: 'ambiguous' };
+      const row = rows[0]!;
+      const receipt = parseIssueCompletionReceipt(row.proof);
+      if (
+        !receipt ||
+        row.proof_digest !== receipt.proofDigest ||
+        row.work_item_revision !== receipt.workItemRevision ||
+        receipt.projectId !== factoryProjectId ||
+        receipt.workItemId !== workItemId ||
+        receipt.workItemRevision !== item.revision ||
+        !this.#isTerminal(toWorkItem(item)) ||
+        item.external_source?.integrationId !== 'github' ||
+        item.external_source?.type !== 'issue' ||
+        item.metadata?.githubIssueNumber !== receipt.sourceIssueNumber ||
+        (item.metadata?.repository !== undefined && item.metadata.repository !== receipt.sourceRepository)
+      ) return { kind: 'ambiguous' };
+
+      // A completed run delivery is not a GitHub merge/review proof, but a
+      // missing or incomplete native effect *rules out* positive completion.
+      const effect = await ops.findOne<{
+        org_id: string;
+        factory_project_id: string;
+        work_item_id: string | null;
+        status: string;
+        completed_at: Date | null;
+      }>('factory_deferred_decisions', {
+        id: receipt.nativeEffectId,
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+      });
+      if (
+        !effect ||
+        effect.work_item_id !== workItemId ||
+        effect.status !== 'succeeded' ||
+        !effect.completed_at
+      ) return { kind: 'ambiguous' };
+      return { kind: 'found', receipt };
+    });
+  }
+
   async getEnqueueReceipt(
     orgId: string,
     factoryProjectId: string,

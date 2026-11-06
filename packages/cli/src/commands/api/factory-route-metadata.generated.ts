@@ -208,6 +208,23 @@ export const FACTORY_API_ROUTE_METADATA = {
       "listProperty": "thresholds"
     }
   },
+  "GET /web/factory/projects/:id/issue-completion-evidence/:workItemId": {
+    "contractKey": "issueCompletionEvidence",
+    "method": "GET",
+    "path": "/web/factory/projects/:id/issue-completion-evidence/:workItemId",
+    "description": "Read exact independently attested GitHub issue completion, never infer it from a terminal stage",
+    "pathParams": [
+      "id",
+      "workItemId"
+    ],
+    "queryParams": [],
+    "bodyParams": [],
+    "hasQuery": false,
+    "hasBody": false,
+    "responseShape": {
+      "kind": "single"
+    }
+  },
   "GET /web/factory/projects/:id/metrics": {
     "contractKey": "metricsGet",
     "method": "GET",
@@ -1547,6 +1564,164 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
       "required": [
         "thresholds"
       ]
+    }
+  },
+  "GET /web/factory/projects/:id/issue-completion-evidence/:workItemId": {
+    "path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "workItemId": {
+          "$ref": "#/$defs/__schema0"
+        }
+      },
+      "required": [
+        "id",
+        "workItemId"
+      ],
+      "$defs": {
+        "__schema0": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
+    },
+    "response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "const": true
+        },
+        "source": {
+          "type": "string",
+          "const": "independent_native_issue_completion_readback"
+        },
+        "kind": {
+          "type": "string",
+          "const": "issue_completion"
+        },
+        "schemaVersion": {
+          "type": "number",
+          "const": 1
+        },
+        "projectId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "workItemId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "workItemRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sourceRepository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+        },
+        "sourceIssueNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sourceVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sourceSnapshotId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "pullRequestNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "headSha": {
+          "$ref": "#/$defs/__schema1"
+        },
+        "reviewerIdentity": {
+          "type": "string",
+          "const": "modelspend-reviewer"
+        },
+        "reviewHeadSha": {
+          "$ref": "#/$defs/__schema1"
+        },
+        "ciHeadSha": {
+          "$ref": "#/$defs/__schema1"
+        },
+        "mergeSha": {
+          "$ref": "#/$defs/__schema1"
+        },
+        "nativeEffectId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "acceptedAt": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+        },
+        "finalEffectState": {
+          "type": "string",
+          "const": "completed"
+        },
+        "executionVerified": {
+          "type": "boolean",
+          "const": true
+        },
+        "independentNativeCompletion": {
+          "type": "boolean",
+          "const": true
+        },
+        "proofDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "ok",
+        "source",
+        "kind",
+        "schemaVersion",
+        "projectId",
+        "workItemId",
+        "workItemRevision",
+        "sourceRepository",
+        "sourceIssueNumber",
+        "sourceVersion",
+        "sourceSnapshotId",
+        "pullRequestNumber",
+        "headSha",
+        "reviewerIdentity",
+        "reviewHeadSha",
+        "ciHeadSha",
+        "mergeSha",
+        "nativeEffectId",
+        "acceptedAt",
+        "finalEffectState",
+        "executionVerified",
+        "independentNativeCompletion",
+        "proofDigest"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "type": "string",
+          "format": "uuid",
+          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+        },
+        "__schema1": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      }
     }
   },
   "GET /web/factory/projects/:id/metrics": {
@@ -3459,6 +3634,7 @@ export const FACTORY_API_ROUTE_CATALOG = {
   "projectEnvironmentBuilds": "GET /web/factory/projects/:id/environment/builds",
   "projectEnvironmentBuildGet": "GET /web/factory/projects/:id/environment/builds/:buildId",
   "healthThresholdsGet": "GET /web/factory/projects/:id/health/thresholds",
+  "issueCompletionEvidence": "GET /web/factory/projects/:id/issue-completion-evidence/:workItemId",
   "metricsGet": "GET /web/factory/projects/:id/metrics",
   "workItemList": "GET /web/factory/projects/:id/work-items",
   "projectUpdate": "PATCH /web/factory/projects/:id",

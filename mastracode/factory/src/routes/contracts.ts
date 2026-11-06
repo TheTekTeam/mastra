@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { FACTORY_ROLE_STAGES } from '../rules/types.js';
 import { BOARD_IDENTIFIER_RE, MAX_BOARD_IDENTIFIER_LENGTH } from '../rules/validation.js';
 import { FACTORY_MODEL_SCOPES } from '../storage/domains/projects/base.js';
+import { issueCompletionReceiptSchema } from '../storage/domains/work-items/completion-evidence.js';
 
 const FACTORY_ROLE_VALUES = Object.keys(FACTORY_ROLE_STAGES) as [string, ...string[]];
 export const THINKING_LEVELS = THINKING_LEVEL_VALUES as [ThinkingLevelSetting, ...ThinkingLevelSetting[]];
@@ -695,6 +696,13 @@ export const FACTORY_ROUTE_CONTRACTS = {
       nativeEffectId: uuidSchema,
       decisionStatus: decisionStatusSchema,
     }),
+  },
+  issueCompletionEvidence: {
+    method: 'GET',
+    path: '/web/factory/projects/:id/issue-completion-evidence/:workItemId',
+    description: 'Read exact independently attested GitHub issue completion, never infer it from a terminal stage',
+    pathSchema: transitionPathSchema,
+    responseSchema: issueCompletionReceiptSchema,
   },
   decisionList: {
     method: 'GET',
