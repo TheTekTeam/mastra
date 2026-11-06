@@ -4177,6 +4177,12 @@ export class AgentThreadStreamRuntime {
     pubsub?: PubSub,
     registrationOptions?: AgentThreadStrictRegistrationOptions | AgentThreadStreamRegistrationOptions,
   ): Promise<void | AgentThreadRunRegistration> | undefined {
+    // Deny non-strict registration before even assigning the prepared output
+    // or installing a threadless finalizer. Strict registration retains its
+    // separate epoch/lease claim and never enters this legacy fence.
+    if (!registrationOptions?.strict) {
+      assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
+    }
     const { threadId, resourceId } = this.#getThreadTarget(streamOptions);
     const preparedRun = streamOptions.abortSignal
       ? this.#preparedRunsByAbortSignal.get(streamOptions.abortSignal)
@@ -4202,10 +4208,8 @@ export class AgentThreadStreamRuntime {
       return this.#registerRunStrict(agent, output, streamOptions, pubsub, threadId, resourceId, registrationOptions);
     }
 
-    // Legacy registration occurs after provider work may have started and
-    // tolerates lease failure. It is not an authoritative managed claim.
-    // Future enforced ingress must deny it before local state mutation.
-    assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
+    // Legacy registration still tolerates lease failure for unmanaged callers;
+    // selected managed mode rejects this path at method entry above.
     const state = this.#getState(pubsub);
     this.#sweepStaleSuspendedRecords(state, pubsub);
     const key = this.#threadKey(resourceId, threadId);
