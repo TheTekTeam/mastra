@@ -16,6 +16,8 @@
  * inventing a tenant user.
  */
 
+import { createHash } from 'node:crypto';
+
 import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
@@ -24,6 +26,7 @@ import type { AuditAction } from '../storage/domains/audit/actions.js';
 import type { AuditTarget } from '../storage/domains/audit/base.js';
 import type { AuditEmitter, AuditRecorder } from '../storage/domains/audit/domain.js';
 import { auditRequestContext } from '../storage/domains/audit/domain.js';
+import type { ServiceCapabilityAdmission, ServiceCapabilityAuthority } from '../service-capabilities/authority.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { FACTORY_ROUTE_CONTRACTS } from './contracts.js';
@@ -74,6 +77,8 @@ function replayMatchesRequest(
 }
 
 export interface AutomationRunRoutesDeps extends RouteDependencies {
+  /** Opt-in, project-scoped service grant; never authorizes ordinary Factory routes. */
+  serviceCapabilities?: ServiceCapabilityAuthority;
   audit: AuditEmitter & AuditRecorder;
   /** Factory projects domain — validates the `:id` project belongs to the caller's org. */
   projects: FactoryProjectsStorage;
@@ -189,8 +194,11 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
         method: contract.method,
         handler: async c => {
           const context = loose(c);
-          const resolved = await this.#resolveProject(context, 'enqueue');
-          if ('response' in resolved) return resolved.response;
+          const capabilities = this.deps.serviceCapabilities;
+          const serviceCredential = capabilities?.hasServiceCredential(context.req.header('authorization')) ?? false;
+          // Service tokens cannot enter the ordinary organization-admin route.
+          const humanScope = serviceCredential ? undefined : await this.#resolveProject(context, 'enqueue');
+          if (humanScope && 'response' in humanScope) return humanScope.response;
 
           const parsedPath = contract.pathSchema.safeParse({
             id: c.req.param('id'),
@@ -210,12 +218,53 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             arguments?: string;
           };
 
+          let serviceAdmission: ServiceCapabilityAdmission | undefined;
+          let resolved: AutomationRunScope;
+          if (serviceCredential && capabilities) {
+            try {
+              const admitted = await capabilities.admit({
+                authorization: context.req.header('authorization') ?? '',
+                action: 'workItem.enqueue',
+                projectId: parsedPath.data.id,
+                workItemId: parsedPath.data.workItemId,
+                requestId: request.requestId,
+                bodyFingerprint: createHash('sha256').update(JSON.stringify(request)).digest('hex'),
+              });
+              if (admitted.status !== 'admitted') return c.json({ error: 'service_capability_denied' }, 403);
+              serviceAdmission = admitted.admission;
+              resolved = {
+                orgId: serviceAdmission.orgId,
+                userId: serviceAdmission.principalId,
+                factoryProjectId: serviceAdmission.projectId,
+              };
+            } catch {
+              return c.json({ error: 'service_admission_unavailable' }, 503);
+            }
+          } else if (humanScope && !('response' in humanScope)) {
+            resolved = humanScope;
+          } else {
+            return c.json({ error: 'forbidden' }, 403);
+          }
+          const finishService = async (status: 'succeeded' | 'rejected', reason: string | null = null) => {
+            if (!serviceAdmission || !capabilities) return true;
+            try {
+              await capabilities.finish(serviceAdmission, status, reason);
+              return true;
+            } catch {
+              return false;
+            }
+          };
+          const serviceOutcomeUnavailable = () => c.json({ status: 'EFFECT_UNVERIFIED', requestId: request.requestId }, 503);
+
           const item = await workItems.getForProject(
             resolved.orgId,
             resolved.factoryProjectId,
             (parsedPath.data as { workItemId: string }).workItemId,
           );
-          if (!item) return c.json({ error: 'Work item not found' }, 404);
+          if (!item) {
+            if (!(await finishService('rejected', 'work_item_not_found'))) return serviceOutcomeUnavailable();
+            return c.json({ error: 'Work item not found' }, 404);
+          }
 
           const idempotencyKey = `external-orchestrator:${request.requestId}`;
           const decision = {
@@ -227,7 +276,9 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
           };
 
           const now = new Date();
-          const commit = await workItems.commitRuleEvaluation({
+          let commit: Awaited<ReturnType<WorkItemsStorage['commitRuleEvaluation']>>;
+          try {
+            commit = await workItems.commitRuleEvaluation({
             orgId: resolved.orgId,
             factoryProjectId: resolved.factoryProjectId,
             workItemId: item.id,
@@ -239,9 +290,19 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             decisions: [decision],
             causalChain: [],
             now,
-          });
+            });
+          } catch {
+            if (serviceAdmission && capabilities) {
+              try { await capabilities.finish(serviceAdmission, 'effect_unverified', 'native_commit_exception'); } catch {}
+              return serviceOutcomeUnavailable();
+            }
+            throw new Error('Factory native enqueue commit failed');
+          }
 
-          if (commit.status === 'missing') return c.json({ error: 'Work item not found' }, 404);
+          if (commit.status === 'missing') {
+            if (!(await finishService('rejected', 'work_item_not_found'))) return serviceOutcomeUnavailable();
+            return c.json({ error: 'Work item not found' }, 404);
+          }
 
           // A stale commit persists nothing, so the caller can retry the same
           // requestId once it has re-read the work item's revision.
@@ -270,11 +331,15 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
           // `replayed` would report durable success for work that was never
           // enqueued. Reject the collision instead of silently swallowing it.
           if (commit.status === 'replayed' && !replayMatchesRequest(result, item.id, decision)) {
-            await this.#writeAudit(context, resolved, 'factory.run.rejected', request.requestId, targets, {
-              ...auditMetadata,
-              resultStatus: 'rejected',
-              code: 'request_id_conflict',
-            });
+            if (serviceAdmission) {
+              if (!(await finishService('rejected', 'request_id_conflict'))) return serviceOutcomeUnavailable();
+            } else {
+              await this.#writeAudit(context, resolved, 'factory.run.rejected', request.requestId, targets, {
+                ...auditMetadata,
+                resultStatus: 'rejected',
+                code: 'request_id_conflict',
+              });
+            }
             return c.json(
               {
                 status: 'rejected',
@@ -286,14 +351,24 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
           }
 
           if (resultStatus === 'accepted') {
-            await this.#writeAudit(context, resolved, 'factory.run.queued', request.requestId, targets, auditMetadata);
+            if (serviceAdmission) {
+              if (!(await finishService('succeeded', commit.status === 'replayed' ? 'verified_replay' : null))) {
+                return serviceOutcomeUnavailable();
+              }
+            } else {
+              await this.#writeAudit(context, resolved, 'factory.run.queued', request.requestId, targets, auditMetadata);
+            }
             return c.json(
               { status: commit.status === 'replayed' ? 'replayed' : 'committed', requestId: request.requestId },
               commit.status === 'replayed' ? 200 : 202,
             );
           }
 
-          await this.#writeAudit(context, resolved, 'factory.run.rejected', request.requestId, targets, auditMetadata);
+          if (serviceAdmission) {
+            if (!(await finishService('rejected', code ?? resultStatus))) return serviceOutcomeUnavailable();
+          } else {
+            await this.#writeAudit(context, resolved, 'factory.run.rejected', request.requestId, targets, auditMetadata);
+          }
           return c.json(
             { status: 'rejected', ...(code ? { code } : {}), requestId: request.requestId },
             code === 'stale' ? 409 : 422,
