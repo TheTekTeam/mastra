@@ -70,6 +70,32 @@ export const SERVICE_CAPABILITY_GRANTS_SCHEMA: CollectionSchema = {
   indexes: [{ name: 'service_capability_grant_project', columns: ['org_id', 'project_id', 'issued_at'] }],
 };
 
+/**
+ * Trusted handover attestation (schema only). This PR deliberately exposes
+ * NO writer or provisioning route. Until a separately accepted PM/HP6 bridge
+ * proves an exclusive paused/drained handover and persists this row, EVERY
+ * service mutation fails closed at beginEffect.
+ */
+export const SERVICE_CAPABILITY_HANDOVER_LEASES_SCHEMA: CollectionSchema = {
+  name: 'service_capability_handover_leases',
+  columns: {
+    id: { type: 'uuid-pk' },
+    org_id: { type: 'text' },
+    project_id: { type: 'text' },
+    owner_kind: { type: 'text' },
+    owner_epoch: { type: 'text' },
+    automation_revision: { type: 'integer' },
+    pm_dispatch_paused_at: { type: 'timestamp' },
+    native_automation_paused_at: { type: 'timestamp' },
+    native_sessions_drained_at: { type: 'timestamp' },
+    evidence_digest: { type: 'text' },
+    issued_at: { type: 'timestamp' },
+    expires_at: { type: 'timestamp' },
+    revoked_at: { type: 'timestamp', nullable: true },
+  },
+  uniqueIndexes: [{ name: 'service_capability_handover_project_unique', columns: ['org_id', 'project_id'] }],
+};
+
 export const SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA: CollectionSchema = {
   name: 'service_capability_effect_leases',
   columns: {
@@ -164,6 +190,22 @@ interface ConsentDbRow extends Record<string, unknown> {
   expires_at: Date;
   consumed_at: Date | null;
 }
+interface HandoverDbRow extends Record<string, unknown> {
+  id: string;
+  org_id: string;
+  project_id: string;
+  owner_kind: string;
+  owner_epoch: string;
+  automation_revision: number;
+  pm_dispatch_paused_at: Date;
+  native_automation_paused_at: Date;
+  native_sessions_drained_at: Date;
+  evidence_digest: string;
+  issued_at: Date;
+  expires_at: Date;
+  revoked_at: Date | null;
+}
+
 interface LeaseDbRow extends Record<string, unknown> {
   id: string;
   grant_id: string;
@@ -282,6 +324,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     await this.storage.withTransaction(async ops => {
       await ops.deleteMany('service_capability_audit', {});
       await ops.deleteMany('service_capability_effect_leases', {});
+      await ops.deleteMany('service_capability_handover_leases', {});
       await ops.deleteMany('service_capability_consents', {});
       await ops.deleteMany('service_capability_grants', {});
     });
@@ -293,6 +336,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
       SERVICE_CAPABILITY_CONSENTS_SCHEMA,
       SERVICE_CAPABILITY_AUDIT_SCHEMA,
       SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA,
+      SERVICE_CAPABILITY_HANDOVER_LEASES_SCHEMA,
     ]);
   }
 
@@ -414,6 +458,23 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
           grant.revoked_at || grant.issued_at.getTime() > now.getTime() ||
           lease.admitted_at.getTime() > now.getTime() ||
           grant.expires_at.getTime() <= now.getTime()) return false;
+      const handover = await ops.findOne<HandoverDbRow>('service_capability_handover_leases', {
+        org_id: input.orgId, project_id: input.projectId,
+      });
+      const project = await ops.findOne<{ automation_revision: number } & Record<string, unknown>>(
+        'factory_projects', { org_id: input.orgId, id: input.projectId },
+      );
+      if (!handover || !project ||
+          handover.owner_kind !== 'factory-project-manager' ||
+          !handover.owner_epoch.trim() ||
+          !/^[a-f0-9]{64}$/.test(handover.evidence_digest) ||
+          handover.revoked_at !== null ||
+          handover.issued_at.getTime() > now.getTime() ||
+          handover.expires_at.getTime() <= now.getTime() ||
+          handover.automation_revision !== project.automation_revision ||
+          handover.native_automation_paused_at.getTime() > handover.issued_at.getTime() ||
+          handover.native_sessions_drained_at.getTime() > handover.issued_at.getTime() ||
+          handover.pm_dispatch_paused_at.getTime() > handover.issued_at.getTime()) return false;
       let started = false;
       await ops.updateAtomic<LeaseDbRow>('service_capability_effect_leases', { id: lease.id }, current => {
         if (current.started_at || current.settled_at || current.start_by.getTime() <= now.getTime()) return null;
