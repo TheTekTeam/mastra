@@ -133,6 +133,8 @@ import { assertRunFence, DB_NOW_MS, withRunFence } from '../../db/run-fencing';
 import type { Queryable } from '../../db/run-fencing';
 import { toPgJson } from '../../db/sanitize-json';
 import { runPrune, runBatchedDelete, resolveTargets } from '../../retention';
+import { PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS, PG_THREAD_PERSISTENCE_GUARD_VERSION } from './thread-persistence-guard';
+import type { PgThreadPersistenceGuardV1, PgThreadPersistenceGuardCapability, PgThreadPersistenceMutation } from './thread-persistence-guard';
 
 // Database row type that includes timezone-aware columns
 type MessageRowFromDB = {
@@ -241,12 +243,17 @@ export class MemoryPG extends MemoryStorage {
   #schema: string;
   #skipDefaultIndexes?: boolean;
   #indexes?: CreateIndexOptions[];
+  readonly #threadPersistenceGuard?: PgThreadPersistenceGuardV1;
 
   /** Tables managed by this domain */
   static readonly MANAGED_TABLES = [TABLE_THREADS, TABLE_MESSAGES, TABLE_RESOURCES, OM_TABLE] as const;
 
-  constructor(config: PgDomainConfig) {
+  constructor(config: PgDomainConfig, threadPersistenceGuard?: PgThreadPersistenceGuardV1) {
     super();
+    if (threadPersistenceGuard && threadPersistenceGuard.version !== PG_THREAD_PERSISTENCE_GUARD_VERSION) {
+      throw new Error('Unsupported PostgreSQL thread persistence guard version');
+    }
+    this.#threadPersistenceGuard = threadPersistenceGuard;
     const { client, readClient, schemaName, skipDefaultIndexes, indexes } = resolvePgConfig(config);
     this.#db = new PgDB({ client, readClient, schemaName, skipDefaultIndexes });
     this.#schema = schemaName || 'public';
@@ -467,6 +474,38 @@ export class MemoryPG extends MemoryStorage {
 
   #runFencesTable(): string {
     return getTableName({ indexName: TABLE_MEMORY_RUN_FENCES, schemaName: getSchemaName(this.#schema) });
+  }
+
+  /** Machine-readable opt-in only; never implies that Core A2 is installed. */
+  getThreadPersistenceGuardCapability(): PgThreadPersistenceGuardCapability {
+    return this.#threadPersistenceGuard
+      ? { backend: 'postgres', version: 1, installed: true, adoptionReady: false,
+          operations: PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS }
+      : { backend: 'postgres', version: 1, installed: false, adoptionReady: false, operations: [] };
+  }
+
+  async #admitThreadMutation(transaction: Queryable, mutation: PgThreadPersistenceMutation): Promise<void> {
+    await this.#threadPersistenceGuard?.beforeMutation({ ...mutation, transaction });
+  }
+
+  /**
+   * Existing (unselected) PG traffic keeps its original write path. With a
+   * guard configured, its callback and native write share one PG transaction.
+   * The run-fence check remains in that same transaction when present.
+   */
+  async #withThreadMutation<T>(
+    fence: RunFence | undefined,
+    operation: string,
+    resolve: (transaction: Queryable) => Promise<PgThreadPersistenceMutation>,
+    write: (transaction: Queryable) => Promise<T>,
+  ): Promise<T> {
+    if (!this.#threadPersistenceGuard) return this.#fenced(fence, operation, write);
+    return this.#db.client.tx(async transaction => {
+      const effectiveFence = resolveRunFence(this, fence);
+      if (effectiveFence) await assertRunFence(transaction, this.#runFencesTable(), effectiveFence, operation);
+      await this.#admitThreadMutation(transaction, await resolve(transaction));
+      return write(transaction);
+    });
   }
 
   /** Runs `write` behind the run's fence check when it carries a fence. */
@@ -713,6 +752,10 @@ export class MemoryPG extends MemoryStorage {
           updatedAt: thread.updatedAtZ || thread.updatedAt,
         };
 
+        await this.#admitThreadMutation(t, {
+          operation: 'move', previous: normalized,
+          proposed: { ...normalized, resourceId },
+        });
         if (thread.resourceId === resourceId) {
           return normalized;
         }
@@ -871,7 +914,17 @@ export class MemoryPG extends MemoryStorage {
       const createdAt = toUtcISOString(thread.createdAt);
       const updatedAt = toUtcISOString(thread.updatedAt);
       const metadataJson = thread.metadata ? toPgJson(thread.metadata) : null;
-      await this.#fenced(fence, 'saveThread', q =>
+      await this.#withThreadMutation(fence, 'saveThread', async q => {
+        // Serializes same-ID create/upsert attempts across independent PG pools,
+        // so the guard observes the actual prior row before an ON CONFLICT.
+        await q.one('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [thread.id]);
+        await q.oneOrNone(`SELECT id FROM ${tableName} WHERE id = $1 FOR UPDATE`, [thread.id]);
+        return {
+          operation: 'save',
+          previous: await this.#getThreadById(q, { threadId: thread.id }),
+          proposed: thread,
+        };
+      }, q =>
         q.none(
           `INSERT INTO ${tableName} (
           id,
@@ -925,7 +978,18 @@ export class MemoryPG extends MemoryStorage {
   }): Promise<StorageThreadType> {
     const threadTableName = getTableName({ indexName: TABLE_THREADS, schemaName: getSchemaName(this.#schema) });
     try {
-      return await this.#fenced(fence, 'updateThread', async q => {
+      return await this.#withThreadMutation(fence, 'updateThread', async q => {
+        await q.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [id]);
+        const previous = await this.#getThreadById(q, { threadId: id });
+        return {
+          operation: 'update',
+          previous,
+          proposed: previous
+            ? { ...previous, title: title ?? previous.title,
+                metadata: { ...previous.metadata, ...metadata } }
+            : null,
+        };
+      }, async q => {
         const existingThread = await this.#getThreadById(q, { threadId: id });
         if (!existingThread) {
           throw new MastraError({
@@ -990,6 +1054,13 @@ export class MemoryPG extends MemoryStorage {
       const tableName = getTableName({ indexName: TABLE_MESSAGES, schemaName: getSchemaName(this.#schema) });
       const threadTableName = getTableName({ indexName: TABLE_THREADS, schemaName: getSchemaName(this.#schema) });
       await this.#db.client.tx(async t => {
+        if (this.#threadPersistenceGuard) {
+          // Preserve the existing unguarded delete query/lock order exactly.
+          await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [threadId]);
+          await this.#admitThreadMutation(t, {
+            operation: 'delete', previous: await this.#getThreadById(t, { threadId }), proposed: null,
+          });
+        }
         await t.none(`DELETE FROM ${tableName} WHERE thread_id = $1`, [threadId]);
 
         const schemaName = this.#schema || 'public';
@@ -2337,6 +2408,22 @@ export class MemoryPG extends MemoryStorage {
           createdAt: now,
           updatedAt: now,
         };
+
+        if (this.#threadPersistenceGuard) {
+          // For guarded copies, source and target provenance must still be
+          // current inside the same transaction that copies the messages.
+          await t.one('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [newThreadId]);
+          const targetAtCommit = await this.#getThreadById(t, { threadId: newThreadId });
+          if (targetAtCommit) throw new Error('Guarded clone destination already exists');
+          await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR SHARE`, [sourceThreadId]);
+          const sourceAtCommit = await this.#getThreadById(t, { threadId: sourceThreadId });
+          if (!sourceAtCommit || JSON.stringify(sourceAtCommit) !== JSON.stringify(sourceThread)) {
+            throw new Error('Guarded clone source changed before native effect');
+          }
+          await this.#admitThreadMutation(t, {
+            operation: 'copy', previous: null, proposed: newThread, copySource: sourceAtCommit,
+          });
+        }
 
         // Insert the new thread
         await t.none(

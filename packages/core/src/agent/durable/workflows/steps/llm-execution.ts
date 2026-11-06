@@ -15,6 +15,7 @@ import { STEP_MODEL_MESSAGES_KEY } from '../../../../loop/run-scope-keys';
 import { applyAutoResumeSystemMessage } from '../../../../loop/shared/auto-resume-system-message';
 import { buildLlmPromptArgs } from '../../../../loop/shared/build-llm-prompt-args';
 import { composeStepInput } from '../../../../loop/shared/compose-step-input';
+import { CoreEffectAdmissionDeniedError } from '../../../../loop/shared/core-effect-admission';
 import { injectBackgroundTaskPrompt } from '../../../../loop/shared/inject-background-task-prompt';
 import { trackOpenReasoning, watchInterruptibleStream } from '../../../../loop/shared/interruptible-stream';
 import { buildMemoryHeaders, mergeLlmCallHeaders } from '../../../../loop/shared/merge-llm-call-headers';
@@ -101,6 +102,28 @@ function resolveTotalTimeoutAbort(signal: AbortSignal | undefined, error?: Error
   if (isMastraTimeoutError(reason) && reason.timeoutType === 'total') return reason;
   if (isMastraTimeoutError(error) && error.timeoutType === 'total') return error;
   return undefined;
+}
+
+/**
+ * A Core effect denial may cross a stream boundary as a serialized Error.
+ * Both forms are terminal: never retry, recover via processors or fall back.
+ * The name/message fallback can only deny work, not authorize it.
+ */
+function isFatalCoreEffectAdmission(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 3 && current && typeof current === 'object'; depth++) {
+    if (current instanceof CoreEffectAdmissionDeniedError) return true;
+    const candidate = current as { name?: unknown; message?: unknown; cause?: unknown };
+    if (
+      candidate.name === 'CoreEffectAdmissionDeniedError' &&
+      typeof candidate.message === 'string' &&
+      candidate.message.startsWith('CORE_EFFECT_ADMISSION_DENIED (')
+    ) {
+      return true;
+    }
+    current = candidate.cause;
+  }
+  return false;
 }
 
 class DurableOutputProcessorError extends Error {
@@ -2449,6 +2472,14 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
                 modelSpan.error({ error: errorObj });
               }
 
+              // Authorization failure is terminal even when an SDK stream
+              // surfaces it as an ordinary error part.
+              if (isFatalCoreEffectAdmission(errorObj)) {
+                terminalAttemptContext?.recordTerminalError(errorObj);
+                materializeStreamedMessages();
+                return emitFatalErrorBail(errorObj, currentModel.modelId);
+              }
+
               // If this error was triggered by abortSignal cancellation, surface an
               // abort event to the client so onAbort callbacks fire and bail out
               // of the entire fallback/retry flow — a confirmed abort should not
@@ -2542,13 +2573,31 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
             // Check if the stream captured an error (MastraModelOutput swallows errors internally)
             const streamError = outputStream.error;
             if (streamError) {
-              const streamErrorObj = streamError instanceof Error ? streamError : new Error(String(streamError));
+              // A remote stream may hand back a serialized denial object.
+              // Preserve its trusted failure identity as a cause, even when
+              // constructing an Error for logging and terminal reporting.
+              const serializedMessage =
+                streamError && typeof streamError === 'object' && 'message' in streamError
+                  ? (streamError as { message?: unknown }).message
+                  : undefined;
+              const streamErrorObj =
+                streamError instanceof Error
+                  ? streamError
+                  : new Error(typeof serializedMessage === 'string' ? serializedMessage : String(streamError), {
+                      cause: streamError,
+                    });
               logger?.error?.('Stream captured error', { error: streamErrorObj, runId });
 
               if (modelSpanTracker) {
                 modelSpanTracker.reportGenerationError({ error: streamErrorObj });
               } else if (modelSpan) {
                 modelSpan.error({ error: streamErrorObj });
+              }
+
+              if (isFatalCoreEffectAdmission(streamErrorObj)) {
+                terminalAttemptContext?.recordTerminalError(streamErrorObj);
+                materializeStreamedMessages();
+                return emitFatalErrorBail(streamErrorObj, currentModel.modelId);
               }
 
               // Mirror the iterator catch: a run-level budget expiry (#21724)
@@ -2916,6 +2965,12 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
             }
 
             lastError = error instanceof Error ? error : new Error(String(error));
+
+            if (isFatalCoreEffectAdmission(lastError)) {
+              terminalAttemptContext?.recordTerminalError(lastError);
+              materializeStreamedMessages?.();
+              return emitFatalErrorBail(lastError, modelEntry.config.modelId);
+            }
 
             // Confirmed aborts bypass all retry / fallback / processAPIError
             // handling — the user (or upstream caller) explicitly cancelled the

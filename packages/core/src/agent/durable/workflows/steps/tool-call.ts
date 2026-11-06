@@ -5,6 +5,7 @@ import type { ToolBackgroundConfig } from '../../../../background-tasks/types';
 import type { PubSub } from '../../../../events/pubsub';
 import { STEP_MODEL_MESSAGES_KEY } from '../../../../loop/run-scope-keys';
 import { approvalResumeSchema } from '../../../../loop/shared/approval-schema';
+import { CoreEffectAdmissionDeniedError } from '../../../../loop/shared/core-effect-admission';
 import { normalizeModelOutput } from '../../../../loop/shared/normalize-model-output';
 import { readToolResultFromMessageList } from '../../../../loop/shared/read-tool-result';
 import { dispatchBackgroundTool } from '../../../../loop/shared/steps/background-dispatch-core';
@@ -2158,6 +2159,9 @@ export function createDurableToolCallStep() {
         };
       } catch (error) {
         ownership?.throwIfLost();
+        // An epoch denial must beat mappingError and tool-error recovery alike:
+        // neither path may manufacture a successful durable tool result.
+        if (error instanceof CoreEffectAdmissionDeniedError) throw error;
         if (mappingFailure?.error === error) {
           return {
             ...typedInput,
