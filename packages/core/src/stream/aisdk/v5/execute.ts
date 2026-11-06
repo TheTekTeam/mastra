@@ -9,6 +9,7 @@ import type { ModelMethodType } from '../../../llm/model/model.loop.types';
 import { modelSupportsStructuredOutput, modelSupportsTemperature } from '../../../llm/model/provider-registry';
 import { ModelRouterLanguageModel } from '../../../llm/model/router';
 import type { MastraLanguageModel, SharedProviderOptions } from '../../../llm/model/shared.types';
+import { beforeCoreModelProviderRequest, CoreEffectAdmissionDeniedError } from '../../../loop/shared/core-effect-admission';
 import {
   createTimeoutAbortSignal,
   guardStreamUntilMatch,
@@ -59,6 +60,8 @@ function isContentChunk(chunk: unknown): boolean {
  * `shouldRetry` so a terminal error never waits out a provider delay it will not use.
  */
 function isRetryableModelError(error: unknown): boolean {
+  // Native epoch/lease admission denial is control flow, NEVER provider retry.
+  if (error instanceof CoreEffectAdmissionDeniedError) return false;
   // A step budget covers the whole attempt, so burning what is left of it on retries
   // against the same model would only delay the fallback to the next one.
   if (isMastraTimeoutError(error)) {
@@ -462,6 +465,12 @@ export function execute<OUTPUT = undefined>({
               cleanupFirstChunkTimeout = firstChunkTimeout.cleanup;
 
               try {
+                // A2a reaches the last shared modern/durable provider request
+                // boundary, including every p-retry attempt. Runtime remains
+                // hard-disabled; an eventual enforce-mode missing provenance
+                // must throw BEFORE irreversible network/provider work.
+                const modelAdmission = beforeCoreModelProviderRequest();
+                if (modelAdmission) await modelAdmission;
                 const fn = (methodType === 'stream' ? model.doStream : model.doGenerate).bind(model);
 
                 // Cast needed: V2 and V3 call options are structurally compatible but typed differently
