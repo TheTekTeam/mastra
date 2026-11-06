@@ -106,6 +106,16 @@ class PgFactoryStorageOps implements FactoryStorageOps {
     this.#schemas = schemas;
   }
 
+  /** Uses the SAME transaction client as the factory epoch CAS, never the worker wall clock. */
+  async databaseNow(): Promise<Date> {
+    const result = await this.#queryable.query('SELECT clock_timestamp() AS now');
+    const now = result.rows[0]?.now;
+    if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+      throw new Error('PgFactoryStorage: database clock unavailable');
+    }
+    return now;
+  }
+
   #schema(collection: string): CollectionSchema {
     const schema = this.#schemas.get(collection);
     if (!schema) {

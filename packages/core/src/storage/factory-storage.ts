@@ -162,6 +162,9 @@ export class UniqueViolationError extends Error {
  * `ensureCollections`.
  */
 export interface FactoryStorageOps {
+  /** Optional transaction-bound database clock, required for PG-only managed leases. */
+  databaseNow?(): Promise<Date>;
+
   findOne<T extends Record<string, unknown>>(collection: string, where: CollectionWhere): Promise<T | null>;
 
   findMany<T extends Record<string, unknown>>(
