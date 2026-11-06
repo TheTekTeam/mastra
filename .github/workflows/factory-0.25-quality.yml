@@ -78,7 +78,10 @@ jobs:
             --filter '@mastra/pg...' \
             --filter '@mastra/libsql...' \
             --filter '@mastra/platform-workspace...' \
-            --filter '@mastra/code-sdk...'
+            --filter '@mastra/code-sdk...' \
+            --filter '@mastra/client-js...' \
+            --filter '@mastra/hono...' \
+            --filter 'mastra...'
 
       - name: Build Factory dependency graph
         timeout-minutes: 22
