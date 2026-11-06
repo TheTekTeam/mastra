@@ -397,7 +397,7 @@ describe('automation-runs ingress', () => {
         status: 200,
         receipt: expected,
         anonymousStatus: 401,
-        nonAdminStatus: 403,
+        nonAdminStatus: 200,
         foreignTenantStatus: 404,
       });
     } finally {
@@ -407,14 +407,50 @@ describe('automation-runs ingress', () => {
     }
   });
 
-  it('never reveals a receipt to unauthenticated, non-admin, or cross-project callers', async () => {
+  it('grants receipt read to signed-in members of only the owning project organization', async () => {
     await seedProjectAndItem();
     expect((await post(validBody())).status).toBe(202);
+    const memberOptions = { isOrganizationAdmin: async () => false };
+    const member = await getReceipt(REQUEST_ID, orgUser, memberOptions);
+    expect(member.status).toBe(200);
+    expect(await member.json()).toMatchObject({
+      projectId: PROJECT_ID,
+      requestId: REQUEST_ID,
+      workItemId: WORK_ITEM_ID,
+      role: 'work',
+      skillName: 'factory-plan',
+    });
+    const otherMember = { workosId: 'u2', organizationId: 'org1' };
+    expect((await getReceipt(REQUEST_ID, otherMember, memberOptions)).status).toBe(200);
+
+    const unknownRequest = await getReceipt('33333333-3333-4333-8333-333333333333', orgUser, memberOptions);
+    expect(unknownRequest.status).toBe(404);
+    expect(await unknownRequest.json()).toEqual({ error: 'Enqueue receipt not found' });
     expect((await getReceipt(REQUEST_ID, null)).status).toBe(401);
-    expect((await getReceipt(REQUEST_ID, orgUser, { isOrganizationAdmin: async () => false })).status).toBe(403);
+    expect((await getReceipt(REQUEST_ID, { workosId: 'u2' }, memberOptions)).status).toBe(403);
+    expect((await getReceipt(REQUEST_ID, { workosId: 'u2', organizationId: 'foreign-org' }, memberOptions)).status).toBe(404);
+
     const other = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'Separate project' } });
     PROJECT_ID = other.id;
-    expect((await getReceipt()).status).toBe(404);
+    expect((await getReceipt(REQUEST_ID, orgUser, memberOptions)).status).toBe(404);
+  });
+
+  it('keeps automation POST administrator-only even when that member may GET a receipt', async () => {
+    await seedProjectAndItem();
+    expect((await post(validBody())).status).toBe(202);
+    const beforeAudit = await listAudit('org1');
+    const beforeDecisions = await listDecisions();
+    const memberOptions = { isOrganizationAdmin: async () => false };
+    expect((await getReceipt(REQUEST_ID, orgUser, memberOptions)).status).toBe(200);
+    expect(await listAudit('org1')).toEqual(beforeAudit);
+    const forbiddenPost = await post(
+      validBody({ requestId: '44444444-4444-4444-8444-444444444444' }),
+      orgUser,
+      memberOptions,
+    );
+    expect(forbiddenPost.status).toBe(403);
+    expect(await forbiddenPost.json()).toMatchObject({ error: 'forbidden' });
+    expect(await listDecisions()).toEqual(beforeDecisions);
   });
 
   it('returns 404 for unknown requests and malformed receipt identities', async () => {

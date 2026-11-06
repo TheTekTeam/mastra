@@ -10,9 +10,10 @@
  *
  * Idempotency: the `requestId` becomes the ingress identity, so replaying the
  * same request returns the prior result without inserting a second decision.
- * Tenant-mode callers must administer the organization; local (no-auth)
- * deployments run under the shared `local` storage scope without inventing a
- * tenant user.
+ * Tenant-mode enqueue callers must administer the organization; read-only
+ * receipt lookups follow the existing signed-in, org-scoped project GET policy.
+ * Local (no-auth) deployments use the shared `local` storage scope without
+ * inventing a tenant user.
  */
 
 import type { ApiRoute } from '@mastra/core/server';
@@ -91,11 +92,14 @@ interface AutomationRunScope {
 
 export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
   /**
-   * Resolve the `(orgId, userId)` ingress scope. Tenant mode requires a
-   * signed-in organization administrator; local (no-auth) mode runs under the
-   * shared `local` scope without inventing a user.
+   * Resolve the signed-in org for reads; require org-admin for enqueue writes.
+   * This mirrors project GET's tenant boundary without granting work creation.
+   * Local no-auth mode continues to use the shared `local` scope.
    */
-  async #resolveScope(c: Context): Promise<{ orgId: string; userId: string } | { response: Response }> {
+  async #resolveScope(
+    c: Context,
+    access: 'enqueue' | 'read',
+  ): Promise<{ orgId: string; userId: string } | { response: Response }> {
     const { auth } = this.deps;
     if (!auth.enabled()) {
       return { orgId: 'local', userId: 'local' };
@@ -111,7 +115,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
         ),
       };
     }
-    if (!(await auth.isOrganizationAdmin(c, tenant.orgId))) {
+    if (access === 'enqueue' && !(await auth.isOrganizationAdmin(c, tenant.orgId))) {
       return {
         response: c.json(
           { error: 'forbidden', message: 'Organization administrator access is required for automation ingress.' },
@@ -122,9 +126,12 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
     return { orgId: tenant.orgId, userId: tenant.userId };
   }
 
-  /** Resolve the ingress scope AND the org-owned project from the `:id` param. */
-  async #resolveProject(c: Context): Promise<AutomationRunScope | { response: Response }> {
-    const scope = await this.#resolveScope(c);
+  /** Resolve a caller's authorized org AND its org-owned project from `:id`. */
+  async #resolveProject(
+    c: Context,
+    access: 'enqueue' | 'read',
+  ): Promise<AutomationRunScope | { response: Response }> {
+    const scope = await this.#resolveScope(c, access);
     if ('response' in scope) return scope;
 
     const parsedPath = FACTORY_ROUTE_CONTRACTS.projectGet.pathSchema.safeParse({ id: c.req.param('id') });
@@ -182,7 +189,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
         method: contract.method,
         handler: async c => {
           const context = loose(c);
-          const resolved = await this.#resolveProject(context);
+          const resolved = await this.#resolveProject(context, 'enqueue');
           if ('response' in resolved) return resolved.response;
 
           const parsedPath = contract.pathSchema.safeParse({
@@ -297,7 +304,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
         method: receiptContract.method,
         handler: async c => {
           const context = loose(c);
-          const resolved = await this.#resolveProject(context);
+          const resolved = await this.#resolveProject(context, 'read');
           if ('response' in resolved) return resolved.response;
 
           const parsedPath = receiptContract.pathSchema.safeParse({
