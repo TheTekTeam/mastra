@@ -24,6 +24,7 @@ import {
   updateProjectBodySchema,
 } from './contracts.js';
 import { ProjectRoutes } from './projects.js';
+import { buildProjectAppBindingRoutes } from './source-control-app-binding.js';
 import { buildProjectAppEvidenceRoutes } from './source-control-app-evidence.js';
 import { WorkItemRoutes } from './work-items.js';
 
@@ -69,7 +70,14 @@ function registeredFactoryRoutes() {
     github: {},
     enabled: true,
   } as never);
-  return [...projects, ...work, ...attention, ...automationRuns, ...projectAppEvidence];
+  const projectAppBinding = buildProjectAppBindingRoutes({
+    auth: {},
+    projects: {},
+    sourceControl: {},
+    github: {},
+    enabled: true,
+  } as never);
+  return [...projects, ...work, ...attention, ...automationRuns, ...projectAppEvidence, ...projectAppBinding];
 }
 
 describe('Factory route contracts', () => {
