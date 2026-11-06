@@ -12,7 +12,13 @@ export type CoreEffectBoundary =
   | 'model-provider-request'
   | 'shared-native-tool-execute'
   | 'legacy-model-provider-request'
-  | 'legacy-native-tool-execute';
+  | 'legacy-native-tool-execute'
+  | 'agent-preparation'
+  | 'dynamic-model-resolution'
+  | 'dynamic-tool-resolution'
+  | 'durable-recovery'
+  | 'synchronous-clone-construction'
+  | 'synchronous-thread-signal';
 
 export class CoreEffectAdmissionDeniedError extends Error {
   constructor(boundary: CoreEffectBoundary, reason = 'trusted epoch/run admission unavailable') {
@@ -29,6 +35,12 @@ export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
     'shared-native-tool-execute',
     'legacy-model-provider-request',
     'legacy-native-tool-execute',
+    'agent-preparation',
+    'dynamic-model-resolution',
+    'dynamic-tool-resolution',
+    'durable-recovery',
+    'synchronous-clone-construction',
+    'synchronous-thread-signal',
   ] as const,
   nativeSourceResolverInstalled: false,
   managerLeaseInstalled: false,
@@ -72,4 +84,58 @@ export function beforeCoreModelProviderRequest(): Promise<void> | undefined {
 export function beforeCoreNativeToolExecute(): Promise<void> | undefined {
   if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
   return runtimeGate.beforeEffect('shared-native-tool-execute');
+}
+
+/**
+ * A2c early source checkpoints intercept eager agent/default/model/tool
+ * resolvers before their user-supplied factories run. The runtime gate remains
+ * hard-disabled. Future support must provide a trusted B2 origin and B1 epoch
+ * reservation; request claims cannot authorize these calls.
+ */
+export function beforeCoreAgentPreparation(): Promise<void> | undefined {
+  if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
+  return runtimeGate.beforeEffect('agent-preparation');
+}
+
+export function beforeCoreDynamicModelResolution(): Promise<void> | undefined {
+  if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
+  return runtimeGate.beforeEffect('dynamic-model-resolution');
+}
+
+export function beforeCoreDynamicToolResolution(): Promise<void> | undefined {
+  if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
+  return runtimeGate.beforeEffect('dynamic-tool-resolution');
+}
+
+export function beforeCoreDurableRecovery(): Promise<void> | undefined {
+  if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
+  return runtimeGate.beforeEffect('durable-recovery');
+}
+
+/**
+ * Synchronous clone/queue APIs cannot await a PostgreSQL epoch reservation.
+ * Until an authenticated pre-issued reservation protocol is accepted, they
+ * must DENY (not schedule a late asynchronous check) whenever future managed
+ * admission is enabled. No registration/enable path exists in this draft.
+ */
+export class CoreSynchronousIngressGate {
+  readonly #mode: InternalMode;
+
+  constructor(mode: InternalMode = 'disabled') {
+    this.#mode = mode;
+  }
+
+  assert(boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal'): void {
+    if (this.#mode === 'disabled') return;
+    throw new CoreEffectAdmissionDeniedError(boundary, 'synchronous route has no verified epoch reservation');
+  }
+}
+
+// Deliberately no setter, request override, register() or env toggle.
+const runtimeSynchronousIngressGate = new CoreSynchronousIngressGate(CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode);
+
+export function assertCoreSynchronousIngress(
+  boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal',
+): void {
+  runtimeSynchronousIngressGate.assert(boundary);
 }
