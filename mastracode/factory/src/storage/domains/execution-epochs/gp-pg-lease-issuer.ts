@@ -4,7 +4,7 @@ import { PgFactoryStorage } from '@mastra/pg';
 
 import { FACTORY_EXECUTION_EPOCHS_SCHEMA, FACTORY_EXECUTION_RESERVATIONS_SCHEMA } from './base.js';
 import { FACTORY_CORE_MANAGER_LEASES_SCHEMA } from './managed-effect.js';
-import { verifyFactoryGpSignedPacket } from './gp-pg-handover-crypto.js';
+import { verifyFactoryGpSignedPacket, gpV9ScopeTupleDigest } from './gp-pg-handover-crypto.js';
 import type { GpHandoverScope, GpSignedHandoverPacket } from './gp-pg-handover-crypto.js';
 import type { KeyObject } from 'node:crypto';
 
@@ -93,6 +93,10 @@ export interface VerifiedPrivateGpIssuerRequest {
 export type ResolvePrivateGpIssuerRequest = (
   invocation: object,
 ) => Promise<VerifiedPrivateGpIssuerRequest | null>;
+export type ResolvePrivateGpReceipt = (invocation: object) => {
+  scope: GpHandoverScope; leaseIntentId: string; scopeTupleSha256: string;
+} | null;
+
 
 /**
  * The returned fields must come from an independently authenticated, fresh
@@ -201,6 +205,7 @@ export class FactoryGpPgLeaseIssuerStorage extends FactoryStorageDomain {
   readonly #enabled: boolean;
   readonly #trustedKey?: { keyId: string; publicKey: KeyObject };
   readonly #resolveRequest?: ResolvePrivateGpIssuerRequest;
+  readonly #resolveReceipt?: ResolvePrivateGpReceipt;
   readonly #readPm?: ReadAuthenticatedPmAuthority;
   readonly #readNativeDrain?: ReadNativeDrainInPgTransaction;
   readonly #readAppGrant?: ReadLiveProjectAppGrant;
@@ -211,6 +216,7 @@ export class FactoryGpPgLeaseIssuerStorage extends FactoryStorageDomain {
     enabled?: boolean;
     trustedKey?: { keyId: string; publicKey: KeyObject };
     resolvePrivateRequest?: ResolvePrivateGpIssuerRequest;
+    resolvePrivateReceipt?: ResolvePrivateGpReceipt;
     readAuthenticatedPm?: ReadAuthenticatedPmAuthority;
     readNativeDrain?: ReadNativeDrainInPgTransaction;
     readLiveAppGrant?: ReadLiveProjectAppGrant;
@@ -221,6 +227,7 @@ export class FactoryGpPgLeaseIssuerStorage extends FactoryStorageDomain {
     this.#enabled = options.enabled === true;
     this.#trustedKey = options.trustedKey;
     this.#resolveRequest = options.resolvePrivateRequest;
+    this.#resolveReceipt = options.resolvePrivateReceipt;
     this.#readPm = options.readAuthenticatedPm;
     this.#readNativeDrain = options.readNativeDrain;
     this.#readAppGrant = options.readLiveAppGrant;
@@ -410,6 +417,46 @@ export class FactoryGpPgLeaseIssuerStorage extends FactoryStorageDomain {
         return { revision, updated_at: commitNow };
       });
       return issued ? 'issued' : 'denied';
+    });
+  }
+
+  /**
+   * Read-only recovery after an ambiguous HTTPS ACK. UNKNOWN proves nothing:
+   * do not auto-replay a consumed GP challenge under any circumstances.
+   */
+  async receipt(privateInvocation: object):
+    Promise<'issued' | 'revoked' | 'unknown' | 'not_ready'> {
+    if (!this.#enabled || !(this.storage instanceof PgFactoryStorage) ||
+      !this.#resolveReceipt) return 'not_ready';
+    const proof = this.#resolveReceipt(privateInvocation);
+    if (!proof || !proof.scope || proof.leaseIntentId !== proof.scope.leaseIntentId ||
+      proof.scopeTupleSha256 !== gpV9ScopeTupleDigest(proof.scope)) return 'unknown';
+    const scope = proof.scope;
+    return this.storage.withTransaction(async ops => {
+      let result: 'issued' | 'revoked' | 'unknown' = 'unknown';
+      const where = { org_id: scope.factoryOrgId, factory_project_id: scope.projectId };
+      // Same PG epoch row-lock order as issue, beginEffect, and revoke.
+      await ops.updateAtomic<EpochRow>(EPOCHS, where, async epoch => {
+        if (epoch.owner_epoch !== scope.ownerEpoch) return null;
+        const tomb = await ops.findOne(REVOKED, {
+          ...where, lease_intent_id: scope.leaseIntentId,
+          writer_owner_id: scope.writerOwnerId, owner_epoch: scope.ownerEpoch,
+        });
+        if (tomb) { result = 'revoked'; return null; }
+        const consumed = await ops.findOne(CONSUMED, {
+          ...where, lease_intent_id: scope.leaseIntentId,
+          scope_tuple_sha256: proof.scopeTupleSha256,
+          consent_request_id: scope.consentRequestId,
+          owner_epoch: scope.ownerEpoch,
+        });
+        if (!consumed) return null;
+        const lease = await ops.findOne<LeaseRow>(LEASES, where);
+        if (!lease || lease.lease_id !== scope.leaseIntentId ||
+          lease.manager_writer_id !== scope.writerOwnerId) return null;
+        result = lease.state === 'revoked' ? 'revoked' : 'issued';
+        return null;
+      });
+      return result;
     });
   }
 
