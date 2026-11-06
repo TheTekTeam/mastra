@@ -794,6 +794,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
       ? buildProjectAppEvidenceRoutes({
           auth: deps.auth, projects: deps.domains.projects,
           sourceControl: githubStorage, github: githubIntegration,
+          enabled: process.env.FACTORY_APP_EVIDENCE_READ_ENABLED === 'true',
         })
       : []),
     ...providerRoutes,

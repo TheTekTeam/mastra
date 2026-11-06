@@ -55,10 +55,12 @@ async function fixture() {
 }
 
 type Variant = 'positive' | 'revoked' | 'repo-id-drift' | 'wrong-closing-repo' |
-  'head-drift' | 'incomplete-threads' | 'ambiguous-checks';
+  'head-drift' | 'incomplete-threads' | 'ambiguous-checks' |
+  'grant-removed' | 'grant-lost-after' | 'grant-oversized';
 
 function fakeGithub(mode: Variant = 'positive') {
   let repoReads = 0;
+  let grantReads = 0;
   let observedInstallation = 0;
   const github = {
     getAppOctokit: () => ({
@@ -67,6 +69,18 @@ function fakeGithub(mode: Variant = 'positive') {
     getInstallationOctokit: (installationId: number) => {
       observedInstallation = installationId;
       return {
+        apps: {
+          listReposAccessibleToInstallation: async () => {
+            grantReads++;
+            const active = mode !== 'grant-removed' &&
+              !(mode === 'grant-lost-after' && grantReads > 1);
+            const repositories = active ? [{ id: 9988, full_name: REPO }] : [];
+            return { data: {
+              total_count: mode === 'grant-oversized' ? 101 : repositories.length,
+              repositories,
+            } };
+          },
+        },
         repos: {
           get: async () => {
             repoReads++;
@@ -122,7 +136,7 @@ function fakeGithub(mode: Variant = 'positive') {
     },
   };
   return { github, getObservedInstallation: () => observedInstallation,
-    getRepoReads: () => repoReads };
+    getRepoReads: () => repoReads, getGrantReads: () => grantReads };
 }
 
 function app(options: {
@@ -131,6 +145,7 @@ function app(options: {
   user?: { workosId: string; organizationId?: string } | null;
   admin?: boolean;
   enabled?: boolean;
+  featureEnabled?: boolean;
   sourceControl?: unknown;
 }) {
   const hono = new Hono();
@@ -147,6 +162,7 @@ function app(options: {
     projects: options.seed.seed.projects,
     sourceControl: (options.sourceControl ?? options.seed.sourceControl) as never,
     github: options.github as never,
+    enabled: options.featureEnabled ?? true,
   }));
   return hono;
 }
@@ -181,7 +197,26 @@ describe('project-scoped live GitHub App evidence GET', () => {
       expect(body.checks).toHaveLength(2);
       expect(provider.getObservedInstallation()).toBe(12345);
       expect(provider.getRepoReads()).toBe(2);
+      expect(provider.getGrantReads()).toBe(2);
       expect(JSON.stringify(body)).not.toMatch(/token|private.?key|client.?secret|pem/i);
+    } finally { await seed.seed.storage.close(); }
+  });
+
+  it('owner-controlled App evidence route is absent by default and only enabled on explicit opt-in', async () => {
+    const seed = await fixture();
+    try {
+      const provider = fakeGithub();
+      expect(buildProjectAppEvidenceRoutes({
+        auth: fakeRouteAuth({ enabled: true }), projects: seed.seed.projects,
+        sourceControl: seed.sourceControl, github: provider.github as never,
+      })).toHaveLength(0);
+      expect((await app({ seed, github: provider.github, featureEnabled: false })
+        .request(query(seed.project.id))).status).toBe(404);
+      expect(provider.getRepoReads()).toBe(0);
+      expect(provider.getGrantReads()).toBe(0);
+      expect((await app({ seed, github: provider.github, featureEnabled: true })
+        .request(query(seed.project.id))).status).toBe(200);
+      expect(provider.getGrantReads()).toBe(2);
     } finally { await seed.seed.storage.close(); }
   });
 
@@ -209,6 +244,7 @@ describe('project-scoped live GitHub App evidence GET', () => {
   it.each([
     'revoked', 'repo-id-drift', 'wrong-closing-repo',
     'head-drift', 'incomplete-threads', 'ambiguous-checks',
+    'grant-removed', 'grant-lost-after', 'grant-oversized',
   ] as const)('fails closed on %s and returns no raw upstream response', async variant => {
     const seed = await fixture();
     try {

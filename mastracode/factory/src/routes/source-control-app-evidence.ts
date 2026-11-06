@@ -29,6 +29,7 @@ interface Options {
   projects: FactoryProjectsStorage;
   sourceControl: SourceControlStorageHandle;
   github: AppClient;
+  enabled?: boolean;
 }
 interface Binding {
   factoryOrgId: string;
@@ -116,6 +117,23 @@ async function binding(options: Options, scope: Scope): Promise<Binding | null> 
   return { ...selected, bindingDigest: digest(selected) };
 }
 
+// Public repos.get is not grant evidence: a public repository can remain
+// readable after it is removed from this installation. Prove membership from
+// the installation-authenticated repository catalogue itself, and repeat it.
+function installationGrantsRepository(result: unknown, selection: Binding): boolean {
+  const payload = (result as { data?: { total_count?: unknown; repositories?: unknown } } | null)?.data;
+  if (!payload || !Number.isSafeInteger(payload.total_count) ||
+      typeof payload.total_count !== 'number' || payload.total_count < 1 ||
+      payload.total_count > maxEvidence || !Array.isArray(payload.repositories) ||
+      payload.repositories.length !== payload.total_count) return false;
+  return payload.repositories.some(item => {
+    const repo = item as { id?: unknown; full_name?: unknown } | null;
+    return repo?.id === selection.repositoryNumericId &&
+      typeof repo.full_name === 'string' &&
+      repo.full_name.toLowerCase() === selection.repositoryFullName.toLowerCase();
+  });
+}
+
 function expected(c: Context) {
   const contract = FACTORY_ROUTE_CONTRACTS.projectAppEvidenceGet;
   const pathInput = contract.pathSchema.safeParse({ id: c.req.param('id') });
@@ -133,6 +151,9 @@ function expected(c: Context) {
 }
 
 export function buildProjectAppEvidenceRoutes(options: Options): ApiRoute[] {
+  // Production opt-in is explicitly provided by owner-controlled Factory
+  // environment. GitHub integration installation alone never exposes this.
+  if (options.enabled !== true) return [];
   return [registerApiRoute(path, {
     method: 'GET',
     requiresAuth: false,
@@ -161,6 +182,9 @@ export function buildProjectAppEvidenceRoutes(options: Options): ApiRoute[] {
         if (!owner || !repo) return c.json({ error: 'app_source_unavailable' }, 409);
         const app = options.github.getAppOctokit();
         const octokit = options.github.getInstallationOctokit(before.installationId);
+        const initialGrant = await octokit.apps.listReposAccessibleToInstallation({ per_page: maxEvidence });
+        if (!installationGrantsRepository(initialGrant, before))
+          return c.json({ error: 'app_installation_access_lost' }, 409);
 
         const [appResult, repoResult, issueResult, prResult, reviewsResult, checksResult, graph] =
           await Promise.all([
@@ -226,8 +250,12 @@ export function buildProjectAppEvidenceRoutes(options: Options): ApiRoute[] {
         const after = await binding(options, scope);
         if (!after || after.bindingDigest !== before.bindingDigest)
           return c.json({ error: 'app_source_changed' }, 409);
-        const finalRepo = await octokit.repos.get({ owner, repo });
-        if (finalRepo.data.id !== before.repositoryNumericId ||
+        const [finalGrant, finalRepo] = await Promise.all([
+          octokit.apps.listReposAccessibleToInstallation({ per_page: maxEvidence }),
+          octokit.repos.get({ owner, repo }),
+        ]);
+        if (!installationGrantsRepository(finalGrant, before) ||
+            finalRepo.data.id !== before.repositoryNumericId ||
             finalRepo.data.full_name.toLowerCase() !== before.repositoryFullName.toLowerCase())
           return c.json({ error: 'app_installation_access_lost' }, 409);
 

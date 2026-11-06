@@ -67,6 +67,7 @@ function registeredFactoryRoutes() {
     projects: {},
     sourceControl: {},
     github: {},
+    enabled: true,
   } as never);
   return [...projects, ...work, ...attention, ...automationRuns, ...projectAppEvidence];
 }
