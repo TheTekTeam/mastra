@@ -31,8 +31,9 @@ at zero.
   instead of claiming success; it is regression-tested with a recovered remote
   owner. However, direct non-strict `registerRun` still treats a thrown lease
   acquisition as acquired after provider work may already have started. That
-  route remains unsupported for selected-project adoption. PM-owned projects
-  require B1 transactional PG epoch/reservation and trusted run/thread/project
+  route now has a future enforce-mode synchronous denial before local
+  registration, but remains unsupported for positive selected-project adoption.
+  PM-owned projects require B1 transactional PG epoch/reservation and trusted run/thread/project
   binding at _every effect_, not an optimistic pubsub lease.
 - **No positive synchronous queue/clone proof:** these routes are intentionally
   denied in hypothetical enforce mode. To support selected-project handover,

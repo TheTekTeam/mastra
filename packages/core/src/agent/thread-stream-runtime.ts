@@ -4202,6 +4202,10 @@ export class AgentThreadStreamRuntime {
       return this.#registerRunStrict(agent, output, streamOptions, pubsub, threadId, resourceId, registrationOptions);
     }
 
+    // Legacy registration occurs after provider work may have started and
+    // tolerates lease failure. It is not an authoritative managed claim.
+    // Future enforced ingress must deny it before local state mutation.
+    assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
     const state = this.#getState(pubsub);
     this.#sweepStaleSuspendedRecords(state, pubsub);
     const key = this.#threadKey(resourceId, threadId);

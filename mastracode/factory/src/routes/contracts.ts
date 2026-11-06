@@ -31,10 +31,7 @@ const rawBoundedTrimmed = (max: number) =>
     .pipe(z.string().min(1));
 const trimmedUuidSchema = z.string().trim().regex(new RegExp(UUID_PATTERN));
 const numericQuery = (minimum: 0 | 1) =>
-  z
-    .string()
-    .regex(/^(0|[1-9][0-9]{0,15})$/)
-    .transform(Number)
+  z.string().regex(/^(0|[1-9][0-9]{0,15})$/).transform(Number)
     .pipe(z.number().int().min(minimum).max(Number.MAX_SAFE_INTEGER));
 const nullableTrimmed = (max: number) =>
   z.union([
@@ -508,81 +505,66 @@ export const FACTORY_ROUTE_CONTRACTS = {
   projectAppEvidenceGet: {
     method: 'GET',
     path: '/web/factory/projects/:id/source-control-evidence',
-    description:
-      'Authenticated project-scoped read-only GitHub App repo, issue, PR, HP6 review and CI proof (no credentials)',
+    description: 'Authenticated project-scoped read-only GitHub App repo, issue, PR, HP6 review and CI proof (no credentials)',
     pathSchema: projectPathSchema,
-    querySchema: z
-      .object({
-        repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
-        issueNumber: numericQuery(1),
-        pullRequestNumber: numericQuery(1),
-        expectedAutomationRevision: numericQuery(0),
-        expectedHeadSha: z.string().regex(/^[a-f0-9]{40}$/),
-        expectedMergeSha: z.string().regex(/^[a-f0-9]{40}$/),
-      })
-      .strict(),
-    responseSchema: z
-      .object({
-        version: z.literal('factory_app_source_v1'),
-        factoryOrgId: z.string(),
-        projectId: uuidSchema,
-        projectRepositoryLinkId: z.string(),
-        connectionId: z.string(),
-        repository: z.object({
-          fullName: z.string(),
-          id: z.number().int().min(1),
-          ownerId: z.number().int().min(1),
-        }),
-        installation: z.object({
-          installationId: z.number().int().min(1),
-          appSlug: z.string().min(1),
-          repositoryAccessVerified: z.literal(true),
-          verifiedAtMs: z.number().int().min(1),
-        }),
-        bindingDigest: z.string().regex(/^[a-f0-9]{64}$/),
-        projectAutomationRevision: z.number().int().min(0),
-        readAtMs: z.number().int().min(1),
-        expiresAtMs: z.number().int().min(1),
-        issue: z.object({
-          number: z.number().int().min(1),
-          databaseId: z.number().int().min(1),
-          state: z.string(),
-          updatedAt: z.string(),
-          repositoryId: z.number().int().min(1),
-        }),
-        pullRequest: z.object({
-          number: z.number().int().min(1),
-          headSha: z.string().regex(/^[a-f0-9]{40}$/),
-          baseSha: z.string().regex(/^[a-f0-9]{40}$/),
-          mergeCommitSha: z.string().regex(/^[a-f0-9]{40}$/),
-          mergedAtMs: z.number().int().min(1).nullable(),
-          repositoryId: z.number().int().min(1),
-        }),
-        reviews: z
-          .array(
-            z.object({
-              reviewerId: z.number().int().min(1),
-              identity: z.string().min(1),
-              state: z.string(),
-              commitId: z.string().min(1),
-              submittedAtMs: z.number().int().min(1),
-            }),
-          )
-          .max(100),
-        checks: z
-          .array(
-            z.object({
-              name: z.string().min(1),
-              headSha: z.string().regex(/^[a-f0-9]{40}$/),
-              status: z.string(),
-              conclusion: z.string(),
-              completedAtMs: z.number().int().min(1),
-            }),
-          )
-          .max(100),
-        unresolvedBlockingThreads: z.number().int().min(0),
-      })
-      .strict(),
+    querySchema: z.object({
+      repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
+      issueNumber: numericQuery(1),
+      pullRequestNumber: numericQuery(1),
+      expectedAutomationRevision: numericQuery(0),
+      expectedHeadSha: z.string().regex(/^[a-f0-9]{40}$/),
+      expectedMergeSha: z.string().regex(/^[a-f0-9]{40}$/),
+    }).strict(),
+    responseSchema: z.object({
+      version: z.literal('factory_app_source_v1'),
+      factoryOrgId: z.string(),
+      projectId: uuidSchema,
+      projectRepositoryLinkId: z.string(),
+      connectionId: z.string(),
+      repository: z.object({
+        fullName: z.string(), id: z.number().int().min(1), ownerId: z.number().int().min(1),
+      }),
+      installation: z.object({
+        installationId: z.number().int().min(1),
+        appSlug: z.string().min(1),
+        repositoryAccessVerified: z.literal(true),
+        verifiedAtMs: z.number().int().min(1),
+      }),
+      bindingDigest: z.string().regex(/^[a-f0-9]{64}$/),
+      projectAutomationRevision: z.number().int().min(0),
+      readAtMs: z.number().int().min(1),
+      expiresAtMs: z.number().int().min(1),
+      issue: z.object({
+        number: z.number().int().min(1),
+        databaseId: z.number().int().min(1),
+        state: z.string(),
+        updatedAt: z.string(),
+        repositoryId: z.number().int().min(1),
+      }),
+      pullRequest: z.object({
+        number: z.number().int().min(1),
+        headSha: z.string().regex(/^[a-f0-9]{40}$/),
+        baseSha: z.string().regex(/^[a-f0-9]{40}$/),
+        mergeCommitSha: z.string().regex(/^[a-f0-9]{40}$/),
+        mergedAtMs: z.number().int().min(1).nullable(),
+        repositoryId: z.number().int().min(1),
+      }),
+      reviews: z.array(z.object({
+        reviewerId: z.number().int().min(1),
+        identity: z.string().min(1),
+        state: z.string(),
+        commitId: z.string().min(1),
+        submittedAtMs: z.number().int().min(1),
+      })).max(100),
+      checks: z.array(z.object({
+        name: z.string().min(1),
+        headSha: z.string().regex(/^[a-f0-9]{40}$/),
+        status: z.string(),
+        conclusion: z.string(),
+        completedAtMs: z.number().int().min(1),
+      })).max(100),
+      unresolvedBlockingThreads: z.number().int().min(0),
+    }).strict(),
   },
   projectUpdate: {
     method: 'PATCH',

@@ -21,31 +21,22 @@ function schemaName() {
 
 pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
   it('rejects unsupported guard versions before allocating a protected PG writer', () => {
-    expect(
-      () =>
-        new PostgresStore({
-          id: 'pg-a0-unsupported',
-          connectionString: qaUrl!,
-          schemaName: schemaName(),
-          threadPersistenceGuard: { version: 2, beforeMutation: async () => {} } as never,
-        }),
-    ).toThrow();
+    expect(() => new PostgresStore({
+      id: 'pg-a0-unsupported', connectionString: qaUrl!, schemaName: schemaName(),
+      threadPersistenceGuard: { version: 2, beforeMutation: async () => {} } as never,
+    })).toThrow();
   });
 
   it('defaults off, reports capability honestly, and keeps normal writes unchanged', async () => {
     const store = new PostgresStore({ id: 'pg-a0-default', connectionString: qaUrl!, schemaName: schemaName() });
     try {
-      expect(store.getThreadPersistenceGuardCapability()).toEqual({
-        backend: 'postgres',
-        version: 1,
-        installed: false,
-        adoptionReady: false,
-        operations: [],
-      });
+      expect(store.getThreadPersistenceGuardCapability())
+        .toEqual({ backend: 'postgres', version: 1, installed: false, adoptionReady: false, operations: [] });
       await store.init();
       const memory = (await store.getStore('memory'))!;
       await memory.saveThread({ thread: thread('without-guard', 'personal') });
-      expect(await memory.getThreadById({ threadId: 'without-guard' })).toMatchObject({ resourceId: 'personal' });
+      expect(await memory.getThreadById({ threadId: 'without-guard' }))
+        .toMatchObject({ resourceId: 'personal' });
       await memory.deleteThread({ threadId: 'without-guard' });
       expect(await memory.getThreadById({ threadId: 'without-guard' })).toBeNull();
     } finally {
@@ -66,36 +57,26 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       },
     };
     const store = new PostgresStore({
-      id: 'pg-a0-admission',
-      connectionString: qaUrl!,
-      schemaName: schemaName(),
+      id: 'pg-a0-admission', connectionString: qaUrl!, schemaName: schemaName(),
       threadPersistenceGuard: guard,
     });
     try {
       expect(store.getThreadPersistenceGuardCapability()).toMatchObject({
-        backend: 'postgres',
-        version: 1,
-        installed: true,
-        adoptionReady: false,
+        backend: 'postgres', version: 1, installed: true, adoptionReady: false,
         operations: ['save', 'update', 'copy', 'move', 'delete'],
       });
       await store.init();
       const memory = (await store.getStore('memory'))!;
-      await expect(
-        memory.saveThread({
-          thread: thread('forged', 'selected-project', {
-            factorySessionId: 'selected-project',
-            organizationId: 'org-a',
-            ownerId: 'gp',
-          }),
-        }),
-      ).rejects.toThrow();
+      await expect(memory.saveThread({ thread: thread('forged', 'selected-project', {
+        factorySessionId: 'selected-project', organizationId: 'org-a', ownerId: 'gp',
+      }) })).rejects.toThrow();
       expect(await memory.getThreadById({ threadId: 'forged' })).toBeNull();
       await memory.saveThread({ thread: thread('personal', 'unselected-user') });
       privateServerProof = true;
       await memory.saveThread({ thread: thread('verified', 'selected-project') });
       expect(observed.filter(mutation => mutation.operation === 'save')).toHaveLength(3);
-      expect(await memory.getThreadById({ threadId: 'verified' })).toMatchObject({ resourceId: 'selected-project' });
+      expect(await memory.getThreadById({ threadId: 'verified' }))
+        .toMatchObject({ resourceId: 'selected-project' });
     } finally {
       await store.close();
     }
@@ -110,9 +91,7 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       },
     };
     const store = new PostgresStore({
-      id: 'pg-a0-mutations',
-      connectionString: qaUrl!,
-      schemaName: schemaName(),
+      id: 'pg-a0-mutations', connectionString: qaUrl!, schemaName: schemaName(),
       threadPersistenceGuard: guard,
     });
     try {
@@ -120,23 +99,16 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       const memory = (await store.getStore('memory'))!;
       await memory.saveThread({ thread: thread('origin', 'selected-project') });
       privateServerProof = false;
-      await expect(
-        memory.copyThread({
-          sourceThreadId: 'origin',
-          newThreadId: 'spoof-clone',
-          resourceId: 'selected-project',
-        }),
-      ).rejects.toThrow();
+      await expect(memory.copyThread({
+        sourceThreadId: 'origin', newThreadId: 'spoof-clone', resourceId: 'selected-project',
+      })).rejects.toThrow();
       expect(await memory.getThreadById({ threadId: 'spoof-clone' })).toBeNull();
       await expect(memory.updateThread({ id: 'origin', title: 'Spoofed' })).rejects.toThrow();
-      await expect(
-        memory.updateThreadResourceId({ threadId: 'origin', resourceId: 'unselected-user' }),
-      ).rejects.toThrow();
+      await expect(memory.updateThreadResourceId({ threadId: 'origin', resourceId: 'unselected-user' }))
+        .rejects.toThrow();
       await expect(memory.deleteThread({ threadId: 'origin' })).rejects.toThrow();
-      expect(await memory.getThreadById({ threadId: 'origin' })).toMatchObject({
-        resourceId: 'selected-project',
-        title: 'Unchanged',
-      });
+      expect(await memory.getThreadById({ threadId: 'origin' }))
+        .toMatchObject({ resourceId: 'selected-project', title: 'Unchanged' });
     } finally {
       await store.close();
     }
@@ -146,12 +118,8 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
     const schema = schemaName();
     let releaseCopy!: () => void;
     let signalCopy!: () => void;
-    const entered = new Promise<void>(resolve => {
-      signalCopy = resolve;
-    });
-    const barrier = new Promise<void>(resolve => {
-      releaseCopy = resolve;
-    });
+    const entered = new Promise<void>(resolve => { signalCopy = resolve; });
+    const barrier = new Promise<void>(resolve => { releaseCopy = resolve; });
     const guard: PgThreadPersistenceGuardV1 = {
       version: 1,
       async beforeMutation(input) {
@@ -161,12 +129,8 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
         await barrier;
       },
     };
-    const a = new PostgresStore({
-      id: 'pg-a0-clone-a',
-      connectionString: qaUrl!,
-      schemaName: schema,
-      threadPersistenceGuard: guard,
-    });
+    const a = new PostgresStore({ id: 'pg-a0-clone-a', connectionString: qaUrl!, schemaName: schema,
+      threadPersistenceGuard: guard });
     const b = new PostgresStore({ id: 'pg-a0-clone-b', connectionString: qaUrl!, schemaName: schema });
     try {
       await a.init();
@@ -175,24 +139,21 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       const second = (await b.getStore('memory'))!;
       await first.saveThread({ thread: thread('clone-source', 'selected-project') });
       const copy = first.copyThread({
-        sourceThreadId: 'clone-source',
-        newThreadId: 'concurrent-copy',
-        resourceId: 'selected-project',
+        sourceThreadId: 'clone-source', newThreadId: 'concurrent-copy', resourceId: 'selected-project',
       });
       await entered;
       let transferCommitted = false;
-      const move = second.updateThreadResourceId({ threadId: 'clone-source', resourceId: 'other-project' }).then(() => {
-        transferCommitted = true;
-      });
+      const move = second.updateThreadResourceId({ threadId: 'clone-source', resourceId: 'other-project' })
+        .then(() => { transferCommitted = true; });
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(transferCommitted).toBe(false);
       releaseCopy();
       await copy;
       await move;
-      expect(await first.getThreadById({ threadId: 'concurrent-copy' })).toMatchObject({
-        resourceId: 'selected-project',
-      });
-      expect(await first.getThreadById({ threadId: 'clone-source' })).toMatchObject({ resourceId: 'other-project' });
+      expect(await first.getThreadById({ threadId: 'concurrent-copy' }))
+        .toMatchObject({ resourceId: 'selected-project' });
+      expect(await first.getThreadById({ threadId: 'clone-source' }))
+        .toMatchObject({ resourceId: 'other-project' });
     } finally {
       releaseCopy?.();
       await a.close();
@@ -230,18 +191,13 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
     const pool = new Pool({ connectionString: qaUrl, max: 4 });
     let releaseGuard!: () => void;
     let signalEntered!: () => void;
-    const entered = new Promise<void>(resolve => {
-      signalEntered = resolve;
-    });
-    const barrier = new Promise<void>(resolve => {
-      releaseGuard = resolve;
-    });
+    const entered = new Promise<void>(resolve => { signalEntered = resolve; });
+    const barrier = new Promise<void>(resolve => { releaseGuard = resolve; });
     const guard: PgThreadPersistenceGuardV1 = {
       version: 1,
       async beforeMutation({ transaction }) {
         const epoch = await transaction.one<{ revision: number }>(
-          `SELECT revision FROM "${schema}".guard_epoch WHERE id = 1 FOR SHARE`,
-        );
+          `SELECT revision FROM "${schema}".guard_epoch WHERE id = 1 FOR SHARE`);
         if (epoch.revision !== 0) throw new Error('stale owner epoch');
         signalEntered();
         await barrier;
@@ -256,16 +212,16 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       const write = memory.saveThread({ thread: thread('race', 'selected-project') });
       await entered;
       let revocationCommitted = false;
-      const revoke = pool.query(`UPDATE "${schema}".guard_epoch SET revision = 1 WHERE id = 1`).then(() => {
-        revocationCommitted = true;
-      });
+      const revoke = pool.query(`UPDATE "${schema}".guard_epoch SET revision = 1 WHERE id = 1`)
+        .then(() => { revocationCommitted = true; });
       await new Promise(resolve => setTimeout(resolve, 50));
       expect(revocationCommitted).toBe(false);
       releaseGuard();
       await write;
       await revoke;
       expect(revocationCommitted).toBe(true);
-      await expect(memory.saveThread({ thread: thread('after-revoke', 'selected-project') })).rejects.toThrow();
+      await expect(memory.saveThread({ thread: thread('after-revoke', 'selected-project') }))
+        .rejects.toThrow();
       expect(await memory.getThreadById({ threadId: 'after-revoke' })).toBeNull();
     } finally {
       releaseGuard?.();

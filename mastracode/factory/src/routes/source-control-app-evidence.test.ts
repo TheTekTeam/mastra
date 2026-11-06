@@ -28,15 +28,11 @@ function query(projectId: string, overrides: Record<string, string> = {}) {
 async function fixture() {
   const seed = await createFactoryStorageForTests();
   const project = await seed.projects.create({
-    orgId: ORG,
-    userId: PROJECT_OWNER.workosId,
-    input: { name: 'HTAI only' },
+    orgId: ORG, userId: PROJECT_OWNER.workosId, input: { name: 'HTAI only' },
   });
   const sourceControl = seed.sourceControl.forIntegration('github');
   const installation = await sourceControl.installations.upsert({
-    orgId: ORG,
-    connectedByUserId: 'gp',
-    externalId: '12345',
+    orgId: ORG, connectedByUserId: 'gp', externalId: '12345',
   });
   const repository = await sourceControl.repositories.upsert({
     orgId: ORG,
@@ -48,33 +44,19 @@ async function fixture() {
     },
   });
   const connection = await sourceControl.connections.create({
-    orgId: ORG,
-    factoryProjectId: project.id,
-    installationId: installation.id,
-    createdByUserId: 'gp',
+    orgId: ORG, factoryProjectId: project.id,
+    installationId: installation.id, createdByUserId: 'gp',
   });
   const link = await sourceControl.projectRepositories.link({
-    orgId: ORG,
-    connectionId: connection.id,
-    repositoryId: repository.id,
-    createdByUserId: 'gp',
-    sandboxProvider: 'local',
-    sandboxWorkdir: '/workspace/htai',
+    orgId: ORG, connectionId: connection.id, repositoryId: repository.id,
+    createdByUserId: 'gp', sandboxProvider: 'local', sandboxWorkdir: '/workspace/htai',
   });
   return { seed, project, sourceControl, installation, repository, connection, link };
 }
 
-type Variant =
-  | 'positive'
-  | 'revoked'
-  | 'repo-id-drift'
-  | 'wrong-closing-repo'
-  | 'head-drift'
-  | 'incomplete-threads'
-  | 'ambiguous-checks'
-  | 'grant-removed'
-  | 'grant-lost-after'
-  | 'grant-oversized';
+type Variant = 'positive' | 'revoked' | 'repo-id-drift' | 'wrong-closing-repo' |
+  'head-drift' | 'incomplete-threads' | 'ambiguous-checks' |
+  'grant-removed' | 'grant-lost-after' | 'grant-oversized';
 
 function fakeGithub(mode: Variant = 'positive') {
   let repoReads = 0;
@@ -90,107 +72,71 @@ function fakeGithub(mode: Variant = 'positive') {
         apps: {
           listReposAccessibleToInstallation: async () => {
             grantReads++;
-            const active = mode !== 'grant-removed' && !(mode === 'grant-lost-after' && grantReads > 1);
+            const active = mode !== 'grant-removed' &&
+              !(mode === 'grant-lost-after' && grantReads > 1);
             const repositories = active ? [{ id: 9988, full_name: REPO }] : [];
-            return {
-              data: {
-                total_count: mode === 'grant-oversized' ? 101 : repositories.length,
-                repositories,
-              },
-            };
+            return { data: {
+              total_count: mode === 'grant-oversized' ? 101 : repositories.length,
+              repositories,
+            } };
           },
         },
         repos: {
           get: async () => {
             repoReads++;
             if (mode === 'revoked') throw Object.assign(new Error('forbidden'), { status: 403 });
-            return {
-              data: {
-                id: mode === 'repo-id-drift' ? 9999 : 9988,
-                full_name: REPO,
-                owner: { id: 765 },
-              },
-            };
+            return { data: {
+              id: mode === 'repo-id-drift' ? 9999 : 9988,
+              full_name: REPO, owner: { id: 765 },
+            } };
           },
         },
         issues: {
-          get: async () => ({
-            data: {
-              number: 42,
-              id: 4200,
-              state: 'closed',
-              updated_at: NOW,
-            },
-          }),
+          get: async () => ({ data: {
+            number: 42, id: 4200, state: 'closed', updated_at: NOW,
+          } }),
         },
         pulls: {
-          get: async () => ({
-            data: {
-              number: 67,
-              head: { sha: mode === 'head-drift' ? 'c'.repeat(40) : HEAD },
-              base: { sha: 'f'.repeat(40), repo: { id: 9988 } },
-              merge_commit_sha: MERGE,
-              merged_at: NOW,
-            },
-          }),
-          listReviews: async () => ({
-            data: [
-              {
-                id: 77,
-                user: { id: 777, login: 'modelspend-reviewer' },
-                state: 'APPROVED',
-                commit_id: HEAD,
-                submitted_at: NOW,
-              },
-            ],
-          }),
+          get: async () => ({ data: {
+            number: 67,
+            head: { sha: mode === 'head-drift' ? 'c'.repeat(40) : HEAD },
+            base: { sha: 'f'.repeat(40), repo: { id: 9988 } },
+            merge_commit_sha: MERGE,
+            merged_at: NOW,
+          } }),
+          listReviews: async () => ({ data: [{
+            id: 77, user: { id: 777, login: 'modelspend-reviewer' },
+            state: 'APPROVED', commit_id: HEAD, submitted_at: NOW,
+          }] }),
         },
         checks: {
-          listForRef: async () => ({
-            data: {
-              total_count: mode === 'ambiguous-checks' ? 101 : 2,
-              check_runs: [
-                {
-                  name: 'Node 22',
-                  head_sha: HEAD,
-                  status: 'completed',
-                  conclusion: 'success',
-                  completed_at: NOW,
-                },
-                {
-                  name: 'ci/exact-head',
-                  head_sha: HEAD,
-                  status: 'completed',
-                  conclusion: 'success',
-                  completed_at: NOW,
-                },
-              ],
-            },
-          }),
+          listForRef: async () => ({ data: {
+            total_count: mode === 'ambiguous-checks' ? 101 : 2,
+            check_runs: [{
+              name: 'Node 22', head_sha: HEAD, status: 'completed',
+              conclusion: 'success', completed_at: NOW,
+            }, {
+              name: 'ci/exact-head', head_sha: HEAD, status: 'completed',
+              conclusion: 'success', completed_at: NOW,
+            }],
+          } }),
         },
-        graphql: async () => ({
-          repository: {
-            pullRequest: {
-              closingIssuesReferences: {
-                nodes: [{ number: 42, repository: { databaseId: mode === 'wrong-closing-repo' ? 9999 : 9988 } }],
-                pageInfo: { hasNextPage: false },
-              },
-              reviewThreads: {
-                nodes: [{ isResolved: true }],
-                pageInfo: { hasNextPage: mode === 'incomplete-threads' },
-              },
-            },
+        graphql: async () => ({ repository: { pullRequest: {
+          closingIssuesReferences: {
+            nodes: [{ number: 42,
+              repository: { databaseId: mode === 'wrong-closing-repo' ? 9999 : 9988 } }],
+            pageInfo: { hasNextPage: false },
           },
-        }),
+          reviewThreads: {
+            nodes: [{ isResolved: true }],
+            pageInfo: { hasNextPage: mode === 'incomplete-threads' },
+          },
+        } } }),
       };
     },
   };
-  return {
-    github,
-    getObservedInstallation: () => observedInstallation,
-    getRepoReads: () => repoReads,
-    getGrantReads: () => grantReads,
-  };
+  return { github, getObservedInstallation: () => observedInstallation,
+    getRepoReads: () => repoReads, getGrantReads: () => grantReads };
 }
 
 function app(options: {
@@ -208,19 +154,16 @@ function app(options: {
     if (user) c.set('factoryAuthUser' as never, user as never);
     await next();
   });
-  mountApiRoutes(
-    hono as never,
-    buildProjectAppEvidenceRoutes({
-      auth: fakeRouteAuth({
-        enabled: options.enabled ?? true,
-        isOrganizationAdmin: async () => options.admin ?? true,
-      }),
-      projects: options.seed.seed.projects,
-      sourceControl: (options.sourceControl ?? options.seed.sourceControl) as never,
-      github: options.github as never,
-      enabled: options.featureEnabled ?? true,
+  mountApiRoutes(hono as never, buildProjectAppEvidenceRoutes({
+    auth: fakeRouteAuth({
+      enabled: options.enabled ?? true,
+      isOrganizationAdmin: async () => options.admin ?? true,
     }),
-  );
+    projects: options.seed.seed.projects,
+    sourceControl: (options.sourceControl ?? options.seed.sourceControl) as never,
+    github: options.github as never,
+    enabled: options.featureEnabled ?? true,
+  }));
   return hono;
 }
 
@@ -240,8 +183,7 @@ describe('project-scoped live GitHub App evidence GET', () => {
         connectionId: seed.connection.id,
         repository: { fullName: REPO, id: 9988, ownerId: 765 },
         installation: {
-          installationId: 12345,
-          appSlug: 'modelspend-factory',
+          installationId: 12345, appSlug: 'modelspend-factory',
           repositoryAccessVerified: true,
         },
         projectAutomationRevision: 0,
@@ -257,35 +199,25 @@ describe('project-scoped live GitHub App evidence GET', () => {
       expect(provider.getRepoReads()).toBe(2);
       expect(provider.getGrantReads()).toBe(2);
       expect(JSON.stringify(body)).not.toMatch(/token|private.?key|client.?secret|pem/i);
-    } finally {
-      await seed.seed.storage.close();
-    }
+    } finally { await seed.seed.storage.close(); }
   });
 
   it('owner-controlled App evidence route is absent by default and only enabled on explicit opt-in', async () => {
     const seed = await fixture();
     try {
       const provider = fakeGithub();
-      expect(
-        buildProjectAppEvidenceRoutes({
-          auth: fakeRouteAuth({ enabled: true }),
-          projects: seed.seed.projects,
-          sourceControl: seed.sourceControl,
-          github: provider.github as never,
-        }),
-      ).toHaveLength(0);
-      expect(
-        (await app({ seed, github: provider.github, featureEnabled: false }).request(query(seed.project.id))).status,
-      ).toBe(404);
+      expect(buildProjectAppEvidenceRoutes({
+        auth: fakeRouteAuth({ enabled: true }), projects: seed.seed.projects,
+        sourceControl: seed.sourceControl, github: provider.github as never,
+      })).toHaveLength(0);
+      expect((await app({ seed, github: provider.github, featureEnabled: false })
+        .request(query(seed.project.id))).status).toBe(404);
       expect(provider.getRepoReads()).toBe(0);
       expect(provider.getGrantReads()).toBe(0);
-      expect(
-        (await app({ seed, github: provider.github, featureEnabled: true }).request(query(seed.project.id))).status,
-      ).toBe(200);
+      expect((await app({ seed, github: provider.github, featureEnabled: true })
+        .request(query(seed.project.id))).status).toBe(200);
       expect(provider.getGrantReads()).toBe(2);
-    } finally {
-      await seed.seed.storage.close();
-    }
+    } finally { await seed.seed.storage.close(); }
   });
 
   it('denies anonymous, non-admin, disabled auth and cross-organisation project', async () => {
@@ -295,73 +227,43 @@ describe('project-scoped live GitHub App evidence GET', () => {
       expect((await app({ seed, github, user: null }).request(query(seed.project.id))).status).toBe(401);
       expect((await app({ seed, github, enabled: false }).request(query(seed.project.id))).status).toBe(401);
       expect((await app({ seed, github, admin: false }).request(query(seed.project.id))).status).toBe(403);
-      expect(
-        (
-          await app({ seed, github, user: { workosId: 'other', organizationId: 'another' } }).request(
-            query(seed.project.id),
-          )
-        ).status,
-      ).toBe(409);
-      expect(
-        (
-          await app({ seed, github }).request(
-            query(seed.project.id, {
-              expectedAutomationRevision: '1',
-            }),
-          )
-        ).status,
-      ).toBe(409);
-      expect(
-        (
-          await app({ seed, github }).request(
-            query(seed.project.id, {
-              expectedAutomationRevision: '',
-            }),
-          )
-        ).status,
-      ).toBe(400);
-      expect(
-        (
-          await app({ seed, github }).request(
-            query(seed.project.id, {
-              issueNumber: '01',
-            }),
-          )
-        ).status,
-      ).toBe(400);
-    } finally {
-      await seed.seed.storage.close();
-    }
+      expect((await app({ seed, github, user: { workosId: 'other', organizationId: 'another' } })
+        .request(query(seed.project.id))).status).toBe(409);
+      expect((await app({ seed, github }).request(query(seed.project.id, {
+        expectedAutomationRevision: '1',
+      }))).status).toBe(409);
+      expect((await app({ seed, github }).request(query(seed.project.id, {
+        expectedAutomationRevision: '',
+      }))).status).toBe(400);
+      expect((await app({ seed, github }).request(query(seed.project.id, {
+        issueNumber: '01',
+      }))).status).toBe(400);
+    } finally { await seed.seed.storage.close(); }
   });
 
   it.each([
-    'revoked',
-    'repo-id-drift',
-    'wrong-closing-repo',
-    'head-drift',
-    'incomplete-threads',
-    'ambiguous-checks',
-    'grant-removed',
-    'grant-lost-after',
-    'grant-oversized',
+    'revoked', 'repo-id-drift', 'wrong-closing-repo',
+    'head-drift', 'incomplete-threads', 'ambiguous-checks',
+    'grant-removed', 'grant-lost-after', 'grant-oversized',
   ] as const)('fails closed on %s and returns no raw upstream response', async variant => {
     const seed = await fixture();
     try {
-      const response = await app({ seed, github: fakeGithub(variant).github }).request(query(seed.project.id));
+      const response = await app({ seed, github: fakeGithub(variant).github })
+        .request(query(seed.project.id));
       expect(response.status).toBe(409);
       const body = await response.json();
       expect(Object.keys(body)).toEqual(['error']);
       expect(JSON.stringify(body)).not.toMatch(/token|secret|forbidden from upstream/i);
-    } finally {
-      await seed.seed.storage.close();
-    }
+    } finally { await seed.seed.storage.close(); }
   });
 
   it('denies a changed project link between remote GitHub reads', async () => {
     const seed = await fixture();
     try {
       let calls = 0;
-      const base = seed.sourceControl.projectRepositories.listByProject.bind(seed.sourceControl.projectRepositories);
+      const base = seed.sourceControl.projectRepositories.listByProject.bind(
+        seed.sourceControl.projectRepositories,
+      );
       const sourceControl = {
         ...seed.sourceControl,
         projectRepositories: {
@@ -372,10 +274,9 @@ describe('project-scoped live GitHub App evidence GET', () => {
           },
         },
       };
-      const response = await app({ seed, github: fakeGithub().github, sourceControl }).request(query(seed.project.id));
+      const response = await app({ seed, github: fakeGithub().github, sourceControl })
+        .request(query(seed.project.id));
       expect(response.status).toBe(409);
-    } finally {
-      await seed.seed.storage.close();
-    }
+    } finally { await seed.seed.storage.close(); }
   });
 });

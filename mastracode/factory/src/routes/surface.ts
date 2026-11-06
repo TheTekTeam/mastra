@@ -792,10 +792,8 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
     ...(sourceControls.length === 0 ? [] : buildSourceControlSettingsRoutes({ auth: deps.auth, sourceControls })),
     ...(githubStorage && githubIntegration
       ? buildProjectAppEvidenceRoutes({
-          auth: deps.auth,
-          projects: deps.domains.projects,
-          sourceControl: githubStorage,
-          github: githubIntegration,
+          auth: deps.auth, projects: deps.domains.projects,
+          sourceControl: githubStorage, github: githubIntegration,
           enabled: process.env.FACTORY_APP_EVIDENCE_READ_ENABLED === 'true',
         })
       : []),
