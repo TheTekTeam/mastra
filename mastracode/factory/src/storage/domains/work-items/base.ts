@@ -2316,6 +2316,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
         'superseded',
         'leased',
         'retry',
+        'quota_paused',
         'succeeded',
         'failed',
       ];
