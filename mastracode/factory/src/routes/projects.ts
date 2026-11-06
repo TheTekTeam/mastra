@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import { MastraError } from '@mastra/core/error';
 import type { StandardSchemaWithJSON } from '@mastra/core/schema';
 import type { ApiRoute } from '@mastra/core/server';
@@ -10,6 +12,7 @@ import type { EnvironmentBuildRunner } from '../environment/build-runner.js';
 import { ensureSchedule, invalidCronMessage, readSchedule, scheduleIdFor } from '../environment/build-schedule.js';
 import { redactCredentials } from '../environment/build.js';
 import type { SessionRetirementCoordinator } from '../sandbox/session-retirement.js';
+import type { ServiceCapabilityAuthority } from '../service-capabilities/authority.js';
 import type {
   FactoryProject,
   FactoryProjectsStorage,
@@ -167,6 +170,8 @@ interface ModelApplyController {
 }
 
 export interface ProjectRoutesDeps extends RouteDependencies {
+  /** Opt-in service principal is restricted to the dedicated automation CAS route. */
+  serviceCapabilities?: ServiceCapabilityAuthority;
   /** Factory projects domain backing the CRUD surface. */
   projects: FactoryProjectsStorage;
   /** Source-control domain the connection/repository routes fan out over. */
@@ -602,6 +607,68 @@ export class ProjectRoutes extends Route<ProjectRoutesDeps> {
         requiresAuth: false,
         handler: async routeContext => {
           const context = loose(routeContext);
+          const capabilities = this.deps.serviceCapabilities;
+          // This narrowly scoped authorization never enters the human org-admin path.
+          if (capabilities?.hasServiceCredential(context.req.header('authorization'))) {
+            const parsedServicePath = FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.pathSchema.safeParse({
+              id: context.req.param('id'),
+            });
+            if (!parsedServicePath.success) return context.json({ error: 'Project not found' }, 404);
+            const parsedServiceBody = FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.bodySchema.safeParse(
+              await readJson(context),
+            );
+            if (!parsedServiceBody.success) return context.json({ error: 'invalid_project_automation' }, 400);
+            const requestId = context.req.header('x-factory-request-id');
+            if (!requestId || !UUID_RE.test(requestId)) {
+              return context.json({ error: 'service_request_id_required' }, 400);
+            }
+            const bodyFingerprint = createHash('sha256')
+              .update(JSON.stringify(parsedServiceBody.data))
+              .digest('hex');
+            let admission;
+            try {
+              const admitted = await capabilities.admit({
+                authorization: context.req.header('authorization') ?? '',
+                action: 'projectAutomation.set',
+                projectId: parsedServicePath.data.id,
+                requestId,
+                bodyFingerprint,
+              });
+              if (admitted.status !== 'admitted') return context.json({ error: 'service_capability_denied' }, 403);
+              admission = admitted.admission;
+            } catch {
+              return context.json({ error: 'service_admission_unavailable' }, 503);
+            }
+            let result;
+            try {
+              result = await (await this.#projects()).compareAndSetAutomation({
+                orgId: admission.orgId,
+                id: admission.projectId,
+                ...parsedServiceBody.data,
+              });
+            } catch {
+              try { await capabilities.finish(admission, 'effect_unverified', 'native_storage_exception'); } catch {}
+              return context.json({ status: 'EFFECT_UNVERIFIED', requestId }, 503);
+            }
+            try {
+              await capabilities.finish(
+                admission,
+                result.status === 'updated' ? 'succeeded' : 'rejected',
+                result.status === 'updated' ? null : result.status,
+              );
+            } catch {
+              return context.json({ status: 'EFFECT_UNVERIFIED', requestId }, 503);
+            }
+            context.header('Cache-Control', 'no-store');
+            if (result.status === 'not_found') return context.json({ error: 'Project not found' }, 404);
+            if (result.status === 'conflict') {
+              return context.json(
+                { error: 'automation_state_conflict', automationRevision: result.project.automationRevision },
+                409,
+              );
+            }
+            return context.json({ project: result.project });
+          }
           const tenant = await this.#resolveTenant(context);
           if ('response' in tenant) return tenant.response;
           const parsedPath = FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.pathSchema.safeParse({
