@@ -95,6 +95,7 @@ import {
   TRANSPORT_REF_KEY,
 } from '../../run-scope-keys';
 import { applyAutoResumeSystemMessage } from '../../shared/auto-resume-system-message';
+import { CoreEffectAdmissionDeniedError } from '../../shared/core-effect-admission';
 import { buildLlmPromptArgs } from '../../shared/build-llm-prompt-args';
 import { composeStepInput } from '../../shared/compose-step-input';
 import { injectBackgroundTaskPrompt } from '../../shared/inject-background-task-prompt';
@@ -1184,6 +1185,16 @@ async function processOutputStream<OUTPUT = undefined>({
   return { collectedChunks, toolResultTripwire };
 }
 
+function isCoreEffectAdmissionDenied(error: unknown): boolean {
+  return (
+    error instanceof CoreEffectAdmissionDeniedError ||
+    (typeof error === 'object' &&
+      error !== null &&
+      'name' in error &&
+      error.name === 'CoreEffectAdmissionDeniedError')
+  );
+}
+
 function executeStreamWithFallbackModels<T>(
   models: ModelManagerModelConfig[],
   logger?: IMastraLogger,
@@ -1212,7 +1223,7 @@ function executeStreamWithFallbackModels<T>(
         throwIfInterrupted?.();
         // TripWire errors should be re-thrown immediately - they are intentional aborts
         // from processors (e.g., processInputStep) and should not trigger model retries
-        if (err instanceof TripWire) {
+        if (err instanceof TripWire || isCoreEffectAdmissionDenied(err)) {
           throw err;
         }
 
@@ -2657,6 +2668,13 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
             };
           }
 
+          // Trusted-epoch admission denial is terminal for the model list. No
+          // error processor or fallback provider may recover this result.
+          if (isCoreEffectAdmissionDenied(error)) {
+            await discardAttemptEagerWork();
+            throw error;
+          }
+
           const isUpstreamError = APICallError.isInstance(error);
           const isTerminalAttempt = isLastModel || eagerCoordinator?.hasSuspendedHandback;
 
@@ -2982,6 +3000,11 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
           await settleEagerWorkOnAbort(controller);
           safeEnqueue(controller, { type: 'abort', runId, from: ChunkFrom.AGENT, payload: {} });
           return bailFromExecution('abort');
+        }
+        if (isCoreEffectAdmissionDenied(runState.state.apiError)) {
+          cleanupProviderToolSpans(true);
+          await discardAttemptEagerWork();
+          throw runState.state.apiError;
         }
         const currentRetryCount = inputData.processorRetryCount || 0;
         // Never retry an attempt holding a call that already ran up to a runtime suspend().

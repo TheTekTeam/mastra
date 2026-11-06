@@ -46,6 +46,7 @@ import type {
   StreamObjectResult,
   StreamReturn,
 } from './base.types';
+import { guardLegacyLanguageModel, guardLegacyToolSet } from './legacy-effect-boundary';
 import type { inferOutput, MastraModelOptions } from './shared.types';
 
 export class MastraLLMV1 extends MastraBase {
@@ -132,7 +133,7 @@ export class MastraLLMV1 extends MastraBase {
     requestContext,
     ...rest
   }: GenerateTextWithMessagesArgs<Tools, Z>): Promise<GenerateTextResult<Tools, Z>> {
-    const model = this.#model;
+    const model = guardLegacyLanguageModel(this.#model);
     const observabilityContext = resolveObservabilityContext(rest);
 
     this.logger.debug('Generating text', {
@@ -216,7 +217,7 @@ export class MastraLLMV1 extends MastraBase {
       model,
       temperature,
       tools: {
-        ...(tools as Tools),
+        ...(guardLegacyToolSet(tools) as Tools),
       },
       toolChoice,
       maxSteps,
@@ -341,7 +342,7 @@ export class MastraLLMV1 extends MastraBase {
     requestContext,
     ...rest
   }: GenerateObjectWithMessagesArgs<Z>): Promise<GenerateObjectResult<Z>> {
-    const model = this.#model;
+    const model = guardLegacyLanguageModel(this.#model);
     const observabilityContext = resolveObservabilityContext(rest);
 
     this.logger.debug('Generating text object', { runId });
@@ -495,7 +496,7 @@ export class MastraLLMV1 extends MastraBase {
     requestContext,
     ...rest
   }: StreamTextWithMessagesArgs<Tools, Z>): StreamTextResult<Tools, Z> {
-    const model = this.#model;
+    const model = guardLegacyLanguageModel(this.#model);
     const observabilityContext = resolveObservabilityContext(rest);
 
     let schema: z.ZodType<Z> | Schema<Z> | undefined;
@@ -571,7 +572,7 @@ export class MastraLLMV1 extends MastraBase {
       model,
       temperature,
       tools: {
-        ...(tools as Tools),
+        ...(guardLegacyToolSet(tools) as Tools),
       },
       maxSteps,
       toolChoice,
@@ -757,7 +758,7 @@ export class MastraLLMV1 extends MastraBase {
     structuredOutput,
     ...rest
   }: StreamObjectWithMessagesArgs<T>): StreamObjectResult<T> {
-    const model = this.#model;
+    const model = guardLegacyLanguageModel(this.#model);
     const observabilityContext = resolveObservabilityContext(rest);
 
     this.logger.debug('Streaming structured output', {

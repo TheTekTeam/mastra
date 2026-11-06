@@ -14,6 +14,11 @@ on:
       - ready_for_review
     paths:
       - 'mastracode/factory/**'
+      - 'packages/core/src/llm/model/**'
+      - 'packages/core/src/loop/shared/**'
+      - 'packages/core/src/loop/workflows/agentic-execution/**'
+      - 'packages/core/src/agent/durable/workflows/steps/**'
+      - 'packages/core/src/stream/aisdk/v5/**'
       - 'mastracode/web/src/mastra/index.ts'
       - 'mastracode/web/src/mastra/index.test.ts'
       - 'mastracode/web/scripts/verify-better-auth-pg18.mjs'
@@ -138,6 +143,39 @@ jobs:
       - name: Factory type-aware lint
         timeout-minutes: 8
         run: pnpm --filter @mastra/factory exec oxlint --type-aware .
+
+      - name: Core A2 TypeScript check
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/core exec tsc --noEmit -p tsconfig.json
+
+      - name: Core A2 model tool and legacy effect checkpoints (exact head, no skips)
+        timeout-minutes: 10
+        env:
+          CORE_A2_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CORE_A2_EXPECTED_HEAD"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/execution-epochs/pre-effect-capability.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-core-a2.json" --maxWorkers=1
+          pnpm --filter @mastra/core exec vitest run \
+            src/llm/model/legacy-effect-boundary.test.ts \
+            src/loop/shared/core-effect-admission.test.ts \
+            src/loop/shared/core-effect-engine-denial.test.ts \
+            src/loop/shared/core-effect-model-denial.test.ts \
+            src/agent/durable/__tests__/core-durable-model-denial.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/core-a2.json" --maxWorkers=1
+          node -e '
+            const fs = require("node:fs");
+            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 20, "Core"]]) {
+              const r = JSON.parse(fs.readFileSync(path, "utf8"));
+              if (r.numTotalTests !== count || r.numPassedTests !== count ||
+                  r.numPendingTests !== 0 || r.numFailedTests !== 0) {
+                throw new Error(label + " A2 exact-head test coverage skipped or failed");
+              }
+              console.log(label + " A2 exact-head: " + r.numPassedTests + "/" + r.numTotalTests + " passed");
+            }
+          ' "$RUNNER_TEMP/factory-core-a2.json" "$RUNNER_TEMP/core-a2.json"
 
       - name: Factory App evidence project scope and grant revocation (no skips)
         timeout-minutes: 8

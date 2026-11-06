@@ -1,5 +1,6 @@
 import type { IMastraLogger } from '../../../logger';
 import { ensureSerializable } from '../../../utils/safe-stringify';
+import { beforeCoreNativeToolExecute, CoreEffectAdmissionDeniedError } from '../core-effect-admission';
 import { TOOL_ABORT_GRACE_MS } from '../tool-abort-grace';
 
 export type ExecuteToolOutcome =
@@ -76,6 +77,11 @@ export async function executeToolCall(deps: {
   let executionError: unknown;
 
   try {
+    // A2a shared modern/durable native tool boundary, before tool.execute().
+    // The runtime capability is hard-disabled. Enforced/unknown attribution
+    // must throw, not become a recoverable model-visible tool result.
+    const toolAdmission = beforeCoreNativeToolExecute();
+    if (toolAdmission) await toolAdmission;
     const release = deps.acquireExecution?.();
     const settleSignal = deps.settleSignal ?? abortSignal;
     let onAbort: (() => void) | undefined;
@@ -127,6 +133,7 @@ export async function executeToolCall(deps: {
     // Re-throw FGA authorization errors instead of swallowing them — an
     // authorization denial must fail the run, not be serialized as a
     // recoverable tool error for the LLM to retry.
+    if (error instanceof CoreEffectAdmissionDeniedError) throw error;
     if (error instanceof Error && error.name === 'FGADeniedError') {
       throw error;
     }
