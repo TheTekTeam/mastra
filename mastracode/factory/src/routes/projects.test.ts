@@ -73,6 +73,80 @@ describe('ProjectRoutes', () => {
     expect((await app.request(`/web/factory/projects/${created.project.id}`)).status).toBe(404);
   });
 
+  it('enforces admin-only atomic automation handover, membership, revision fencing and legacy member compatibility', async () => {
+    const seed = await createFactoryStorageForTests();
+    const project = await seed.projects.create({ orgId: 'org-1', userId: 'creator', input: { name: 'Managed' } });
+    const appFor = (user?: { workosId: string; organizationId?: string }, isAdmin = false, authEnabled = true) => {
+      const app = new Hono();
+      app.use('*', async (context, next) => {
+        if (user) context.set('factoryAuthUser' as never, user as never);
+        await next();
+      });
+      mountApiRoutes(
+        app as never,
+        projectRoutes(seed, undefined, undefined, undefined, {
+          auth: fakeRouteAuth({ enabled: authEnabled, isOrganizationAdmin: async () => isAdmin }),
+        }),
+      );
+      return app;
+    };
+    const path = `/web/factory/projects/${project.id}/automation`;
+    const body = {
+      expectedAutomationRevision: 0,
+      expectedAutoRunEnabled: false,
+      expectedAutoApprovePlans: false,
+      autoRunEnabled: true,
+      autoApprovePlans: true,
+    };
+    const patch = (app: Hono, path: string, payload: unknown) =>
+      app.request(path, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    const admin = appFor({ workosId: 'admin', organizationId: 'org-1' }, true);
+    const member = appFor({ workosId: 'member', organizationId: 'org-1' });
+    const otherOrg = appFor({ workosId: 'other-admin', organizationId: 'org-2' }, true);
+
+    expect((await patch(appFor(), path, body)).status).toBe(401);
+    expect((await patch(appFor({ workosId: 'admin' }, true), path, body)).status).toBe(403);
+    expect((await patch(member, path, body)).status).toBe(403);
+    expect((await patch(otherOrg, path, body)).status).toBe(404);
+    expect(
+      (await patch(appFor({ workosId: 'admin', organizationId: 'org-1' }, true, false), path, body)).status,
+    ).toBe(403);
+    expect((await patch(admin, path, { ...body, unexpected: true })).status).toBe(400);
+    expect((await patch(admin, path, { ...body, expectedAutomationRevision: -1 })).status).toBe(400);
+    expect((await seed.projects.get({ orgId: 'org-1', id: project.id }))?.automationRevision).toBe(0);
+
+    // Preserve legacy PATCH behavior for members, but fence CAS on that effective mutation.
+    const legacy = await patch(member, `/web/factory/projects/${project.id}`, { autoRunEnabled: true });
+    expect(legacy.status).toBe(200);
+    expect(await legacy.json()).toMatchObject({
+      project: { autoRunEnabled: true, autoApprovePlans: false, automationRevision: 1 },
+    });
+    const stale = await patch(admin, path, body);
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toMatchObject({ error: 'automation_state_conflict', automationRevision: 1 });
+    expect(await seed.projects.get({ orgId: 'org-1', id: project.id })).toMatchObject({
+      autoRunEnabled: true,
+      autoApprovePlans: false,
+      automationRevision: 1,
+    });
+    const changed = await patch(admin, path, {
+      ...body,
+      expectedAutomationRevision: 1,
+      expectedAutoRunEnabled: true,
+    });
+    expect(changed.status).toBe(200);
+    expect(await changed.json()).toMatchObject({
+      project: { autoRunEnabled: true, autoApprovePlans: true, automationRevision: 2 },
+    });
+    expect((await patch(admin, path, { ...body, expectedAutomationRevision: 1, expectedAutoRunEnabled: true })).status).toBe(
+      409,
+    );
+  });
+
   it('treats the removed slackWorkItemsEnabled setting from an old client as an unknown field', async () => {
     const seed = await createFactoryStorageForTests();
     const project = await seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Platform' } });
