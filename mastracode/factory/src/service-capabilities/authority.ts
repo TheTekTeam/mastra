@@ -253,7 +253,6 @@ export class ServiceCapabilityAuthority {
     bodyFingerprint: string;
     now?: Date;
   }): Promise<{ status: 'admitted'; admission: ServiceCapabilityAdmission } | { status: 'denied' }> {
-    const now = input.now ?? new Date();
     const raw = input.authorization.slice('FactoryService '.length);
     let hash: string | null = null;
     let expectedGrantId: string | null = null;
@@ -277,7 +276,7 @@ export class ServiceCapabilityAuthority {
       projectAllowed: this.#policy.allowedProjectIds.has(input.projectId),
       requestId: input.requestId,
       bodyFingerprint: input.bodyFingerprint,
-      now,
+      now: input.now,
     });
     if (!grant) return { status: 'denied' };
     return {
@@ -299,7 +298,7 @@ export class ServiceCapabilityAuthority {
     orgId: string;
     projectId: string;
     userId: string;
-    operation: 'grant.issue' | 'grant.revoke';
+    operation: 'grant.consent' | 'grant.issue' | 'grant.revoke';
     reason: string;
   }): Promise<void> {
     await this.#storage.recordAudit({
