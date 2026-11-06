@@ -237,7 +237,7 @@ export class ServiceCapabilityAuthority {
 
   /** Recognize only the explicit service scheme. Human Authorization semantics are untouched. */
   hasServiceCredential(header: string | undefined): boolean {
-    return header?.startsWith('FactoryService ') ?? false;
+    return header?.startsWith('FactoryService') ?? false;
   }
 
   /**
