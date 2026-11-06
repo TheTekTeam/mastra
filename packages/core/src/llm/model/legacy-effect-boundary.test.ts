@@ -129,4 +129,26 @@ describe('A2b legacy v1 SDK provider/tool effect boundaries (PM #36)', () => {
     expect(result.text).toBe('provider output');
     expect(effects.generate).toHaveBeenCalledTimes(1);
   });
+  it('blocks SDK v4 genuine retry budgets and structured object generation before provider effects', async () => {
+    const effects = { generate: vi.fn(), stream: vi.fn() };
+    const guarded = guardLegacyLanguageModel(makeModel(effects), new CoreEffectAdmissionGate('enforce'));
+    const legacy = new MastraLLMV1({ model: guarded });
+    const args = { ...runtimeArgs, maxRetries: 2 };
+    // Actual generateText and generateObject SDK entrypoints, not a repeated
+    // zero-retry call masquerading as an SDK retry regression.
+    await expect(legacy.__text(args)).rejects.toThrow();
+    await expect(
+      legacy.__textObject({
+        ...args,
+        structuredOutput: z.object({ answer: z.string() }),
+      }),
+    ).rejects.toThrow();
+    expect(effects.generate).not.toHaveBeenCalled();
+    const stream = legacy.__stream({ ...args, maxRetries: 1 });
+    const parts = [];
+    for await (const part of stream.fullStream) parts.push(part);
+    expect(parts.some(part => part.type === 'error')).toBe(true);
+    expect(parts.some(part => part.type === 'text-delta')).toBe(false);
+    expect(effects.stream).not.toHaveBeenCalled();
+  });
 });

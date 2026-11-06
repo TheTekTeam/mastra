@@ -1054,10 +1054,13 @@ export class MemoryPG extends MemoryStorage {
       const tableName = getTableName({ indexName: TABLE_MESSAGES, schemaName: getSchemaName(this.#schema) });
       const threadTableName = getTableName({ indexName: TABLE_THREADS, schemaName: getSchemaName(this.#schema) });
       await this.#db.client.tx(async t => {
-        await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [threadId]);
-        await this.#admitThreadMutation(t, {
-          operation: 'delete', previous: await this.#getThreadById(t, { threadId }), proposed: null,
-        });
+        if (this.#threadPersistenceGuard) {
+          // Preserve the existing unguarded delete query/lock order exactly.
+          await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [threadId]);
+          await this.#admitThreadMutation(t, {
+            operation: 'delete', previous: await this.#getThreadById(t, { threadId }), proposed: null,
+          });
+        }
         await t.none(`DELETE FROM ${tableName} WHERE thread_id = $1`, [threadId]);
 
         const schemaName = this.#schema || 'public';

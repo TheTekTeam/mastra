@@ -306,6 +306,33 @@ async function main() {
     'qa_existing_receipt_broken');
   const anonymousAgain = await http('GET', '/web/factory/projects/' + projectId);
   gate(anonymousAgain.status === 401, 'qa_phase2_anonymous_not_denied');
+
+  // An actual Better Auth signed-in assembled Factory route must return
+  // native JSON404 while App evidence is OFF. A SPA HTML200 is a fail.
+  // This is part of the existing PG18 acceptance, not a second test run.
+  const appRoutes = [
+    ['issueEvidence', '/source-control-evidence?' + new URLSearchParams({
+      repository: 'TheTekTeam/HTAI', issueNumber: '1', pullRequestNumber: '1',
+      expectedAutomationRevision: String(typedAgain.automationRevision),
+      expectedHeadSha: 'a'.repeat(40), expectedMergeSha: 'b'.repeat(40),
+    })],
+    ['projectBinding', '/source-control-binding?' + new URLSearchParams({
+      expectedOrgId: organization.json.id, repository: 'TheTekTeam/HTAI',
+      expectedRepositoryId: '1', expectedOwnerId: '1', expectedInstallationId: '1',
+      expectedLinkId: 'disabled-route-link', expectedConnectionId: 'disabled-route-connection',
+      expectedAutomationRevision: String(typedAgain.automationRevision),
+    })],
+  ];
+  for (const [label, suffix] of appRoutes) {
+    const route = '/web/factory/projects/' + projectId + suffix;
+    const signedIn = await http('GET', route, undefined, existing.cookie);
+    const anonymous = await http('GET', route);
+    statuses[label + 'DefaultOff'] = signedIn.status;
+    statuses[label + 'Anonymous'] = anonymous.status;
+    gate(signedIn.status === 404 && signedIn.mime.includes('application/json') &&
+      signedIn.json?.error === 'not_found', 'qa_' + label + '_disabled_not_native_json404');
+    gate(anonymous.status === 401, 'qa_' + label + '_anonymous_not_401');
+  }
   console.log(JSON.stringify({
     result: 'PASS', qa: 'factory-better-auth-pg18-two-phase',
     sourceHead: process.env.FACTORY_QA_EXPECTED_HEAD || 'isolated-qa',

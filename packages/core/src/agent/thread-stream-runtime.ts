@@ -4202,6 +4202,10 @@ export class AgentThreadStreamRuntime {
       return this.#registerRunStrict(agent, output, streamOptions, pubsub, threadId, resourceId, registrationOptions);
     }
 
+    // Legacy registration occurs after provider work may have started and
+    // tolerates lease failure. It is not an authoritative managed claim.
+    // Future enforced ingress must deny it before local state mutation.
+    assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
     const state = this.#getState(pubsub);
     this.#sweepStaleSuspendedRecords(state, pubsub);
     const key = this.#threadKey(resourceId, threadId);
@@ -7393,13 +7397,9 @@ export class AgentThreadStreamRuntime {
         throw error;
       }
 
-      // Fail-open on pubsub errors: if the lease backend is unreachable we treat the
-      // call as "acquired" so the caller still gets a response. The tradeoff is that
-      // if multiple processes hit the same pubsub failure simultaneously they can each
-      // start a stream for the same thread (the bug this lease is supposed to prevent),
-      // but failing closed would silently drop user messages on any Redis blip which
-      // is the worse failure mode. Lease TTL + renewal still bound the duplicate
-      // window to a single run, and the next clean acquireLease re-serializes callers.
+      // Legacy unmanaged behavior intentionally favors availability on pubsub
+      // failure. This is NOT authoritative ownership: future managed mode is
+      // denied synchronously at #sendSignal ingress, before this optimistic path.
       const lease = await this.#waitForRetakeOwner(
         leaseProvider,
         reservedKey,

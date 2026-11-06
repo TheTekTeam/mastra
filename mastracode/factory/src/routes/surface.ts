@@ -56,6 +56,7 @@ import {
 } from '../work-item-branch.js';
 import { buildAutomationRunRoutes } from './automation-runs.js';
 import { ConfigRoutes } from './config.js';
+import { FACTORY_ROUTE_CONTRACTS } from './contracts.js';
 import { invalidateCustomProvidersSnapshots } from './custom-provider-source.js';
 import { buildFsRoutes } from './fs.js';
 import { IntakeRoutes } from './intake.js';
@@ -63,6 +64,8 @@ import { KnowledgeRoutes } from './knowledge.js';
 import { OAuthRoutes } from './oauth.js';
 import type { RouteAuth } from './route.js';
 import { SkillRoutes } from './skills.js';
+import { buildProjectAppBindingRoutes } from './source-control-app-binding.js';
+import { buildProjectAppEvidenceRoutes, buildUnavailableProjectAppReadRoutes } from './source-control-app-evidence.js';
 import { buildSourceControlSessionRoutes } from './source-control-sessions.js';
 import { buildSourceControlSettingsRoutes } from './source-control-settings.js';
 import { invalidateTenantCredentialSnapshots } from './tenant-credentials.js';
@@ -789,6 +792,20 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
     }).routes(),
     ...sourceControlSessionRoutes,
     ...(sourceControls.length === 0 ? [] : buildSourceControlSettingsRoutes({ auth: deps.auth, sourceControls })),
+    ...(githubStorage && githubIntegration &&
+      process.env.FACTORY_APP_EVIDENCE_READ_ENABLED === 'true'
+      ? buildProjectAppEvidenceRoutes({
+          auth: deps.auth, projects: deps.domains.projects,
+          sourceControl: githubStorage, github: githubIntegration, enabled: true,
+        })
+      : buildUnavailableProjectAppReadRoutes(deps.auth, [FACTORY_ROUTE_CONTRACTS.projectAppEvidenceGet.path])),
+    ...(githubStorage && githubIntegration &&
+      process.env.FACTORY_APP_PROJECT_BINDING_READ_ENABLED === 'true'
+      ? buildProjectAppBindingRoutes({
+          auth: deps.auth, projects: deps.domains.projects,
+          sourceControl: githubStorage, github: githubIntegration, enabled: true,
+        })
+      : buildUnavailableProjectAppReadRoutes(deps.auth, [FACTORY_ROUTE_CONTRACTS.projectAppBindingGet.path])),
     ...providerRoutes,
     ...absentStubs,
     ...slackAbsentStubs,
