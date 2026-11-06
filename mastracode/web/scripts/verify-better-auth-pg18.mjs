@@ -80,13 +80,26 @@ function sourcePin() {
   const generated = fs.readFileSync(path.join(output, 'mastra.mjs'), 'utf8');
   gate(generated.includes('MASTRACODE_BETTER_AUTH_SIGNUP_ENABLED') &&
     generated.includes('MastraAuthBetterAuth'), 'qa_secure_signup_generated_missing');
-  // Generator must not silently replace a source-built Factory0.25 package
-  // with a same-semver public registry package. Compare both installed roots
-  // against compiled source bytes for native receipt and automation CAS.
-  const files = ['routes/automation-runs.js', 'storage/domains/projects/base.js'];
-  for (const subpath of files) {
-    const source = path.join(sourceFactory, subpath);
-    const sourceHash = hash(source);
+  // Production packaging demands reviewed file: manifest/lock pins. This
+  // disposable CI run may instead stage the exact source tar into an isolated
+  // generated package directory without re-resolving its existing lock graph.
+  const pinProofPath = path.join(output, '.factory-ci-source-pin.json');
+  if (fs.existsSync(pinProofPath)) {
+    const proof = JSON.parse(fs.readFileSync(pinProofPath, 'utf8'));
+    gate(expectedHead && proof.schema === 1 &&
+      proof.purpose === 'disposable-ci-source-factory-pin-only' &&
+      proof.head === expectedHead && proof.compiledFileCount > 100 &&
+      proof.dependencyMapsEqual === true, 'qa_ci_source_pin_proof_invalid');
+    gate(proof.tarSha256 === hash(proof.tarball) &&
+      proof.generatedPackage === fs.realpathSync(path.join(output, 'node_modules/@mastra/factory')) &&
+      proof.rootPackage === fs.realpathSync(path.join(releaseRoot, 'node_modules/@mastra/factory')),
+    'qa_ci_source_pin_origin_mismatch');
+    gate(proof.outputLockSha256 === hash(path.join(output, 'pnpm-lock.yaml')) &&
+      proof.rootLockSha256 === hash(path.join(releaseRoot, 'pnpm-lock.yaml')),
+    'qa_ci_lock_drifted_after_source_stage');
+  } else {
+    // Dell's separately reviewed immutable-releases candidate uses full
+    // offline file: manifest+lock pins in BOTH roots.
     for (const root of [releaseRoot, output]) {
       const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
       const spec = manifest.dependencies?.['@mastra/factory'];
@@ -95,6 +108,12 @@ function sourcePin() {
       const lock = fs.readFileSync(path.join(root, 'pnpm-lock.yaml'), 'utf8');
       gate(lock.includes('specifier: ' + spec) &&
         lock.includes("'@mastra/factory@file:"), 'qa_factory_lock_pin_missing');
+    }
+  }
+  const files = ['routes/automation-runs.js', 'storage/domains/projects/base.js'];
+  for (const subpath of files) {
+    const sourceHash = hash(path.join(sourceFactory, subpath));
+    for (const root of [releaseRoot, output]) {
       const installed = path.join(root, 'node_modules/@mastra/factory/dist', subpath);
       gate(hash(installed) === sourceHash, 'qa_factory_native_source_mismatch');
     }
