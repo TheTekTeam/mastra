@@ -13,6 +13,7 @@ const ISSUE_AUTOMATION: ServiceCapabilityIssueIntent = {
   operation: 'issue',
   actions: ['projectAutomation.set'],
   workItemIds: [],
+  enqueueProfiles: [],
   ttlSeconds: 3600,
 };
 
@@ -51,7 +52,7 @@ describe('native service capability grant authority', () => {
     expect(issued.token).toMatch(/^fcp1_[A-Za-z0-9_-]{43}$/);
     expect(issued.grant).toMatchObject({
       orgId: 'verified-org', projectId: project.id,
-      actions: ['projectAutomation.set'], workItemIds: [], version: 1, revokedAt: null,
+      actions: ['projectAutomation.set'], workItemIds: [], enqueueProfiles: [], version: 1, revokedAt: null,
     });
     expect(issued.grant).not.toHaveProperty('tokenHash');
 
@@ -111,6 +112,7 @@ describe('native service capability grant authority', () => {
     const admitted = await authority.admit(input);
     expect(admitted.status).toBe('admitted');
     if (admitted.status !== 'admitted') throw new Error('Expected admitted mutation');
+    expect(await authority.beginEffect(admitted.admission, new Date(now.getTime() + 60_001))).toBe(true);
     await authority.finish(admitted.admission, 'succeeded');
     expect(await authority.admit({ ...input, projectId: '12345678-1234-4234-8234-123456789011' })).toEqual({
       status: 'denied',
@@ -229,11 +231,54 @@ describe('native service capability grant authority', () => {
       orgId: 'verified-org', projectId: project.id,
     });
     expect(journalBeforeOutcome.some(e => e.requestId === mutation.requestId && e.outcome === 'admitted')).toBe(true);
-    await authority.finish(beforeRevoke.admission, 'effect_unverified', 'revoked_while_in_flight');
+    expect(await authority.beginEffect(beforeRevoke.admission, new Date(now.getTime() + 1_004))).toBe(false);
+    await authority.finish(beforeRevoke.admission, 'rejected', 'revoked_before_effect');
     const journal = await seed.serviceCapabilities.listAudit({ orgId: 'verified-org', projectId: project.id });
     expect(journal.some(e => e.requestId === mutation.requestId && e.outcome === 'denied')).toBe(true);
-    expect(journal.some(e => e.requestId === mutation.requestId && e.outcome === 'effect_unverified')).toBe(true);
+    expect(journal.some(e => e.requestId === mutation.requestId && e.outcome === 'rejected')).toBe(true);
     expect(JSON.stringify(journal)).not.toContain(issued.token);
+  });
+
+  it('permits only a pre-revocation durable effect start to finish after grant revocation', async () => {
+    const { seed, project, authority } = await scenario();
+    const now = new Date('2030-01-01T00:00:00Z');
+    const issueConsent = await authority.beginConsent({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin', intent: ISSUE_AUTOMATION, now,
+    });
+    const issued = await authority.issueGrant({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      consentToken: issueConsent, intent: ISSUE_AUTOMATION, now,
+    });
+    if (issued.status !== 'issued') throw new Error('Expected issue');
+    const admitted = await authority.admit({
+      authorization: 'FactoryService ' + issued.token,
+      action: 'projectAutomation.set', projectId: project.id,
+      requestId: '88888888-8888-4888-8888-888888888888', bodyFingerprint: 'c'.repeat(64),
+      now: new Date(now.getTime() + 1_000),
+    });
+    if (admitted.status !== 'admitted') throw new Error('Expected admission');
+    expect(await authority.beginEffect(admitted.admission, new Date(now.getTime() + 2_000))).toBe(true);
+    expect(await authority.beginEffect(admitted.admission, new Date(now.getTime() + 3_000))).toBe(false);
+    const revocation = { operation: 'revoke' as const, targetGrantId: issued.grant.id };
+    const revokeConsent = await authority.beginConsent({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      intent: revocation, now: new Date(now.getTime() + 3_001),
+    });
+    expect(await authority.revokeGrant({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      intent: revocation, consentToken: revokeConsent, now: new Date(now.getTime() + 3_002),
+    })).toBe('revoked');
+    expect(await seed.serviceCapabilities.listUnsettledEffectLeases({
+      orgId: 'verified-org', projectId: project.id,
+    })).toHaveLength(1);
+    await authority.finish(admitted.admission, 'succeeded');
+    expect(await seed.serviceCapabilities.listUnsettledEffectLeases({
+      orgId: 'verified-org', projectId: project.id,
+    })).toHaveLength(0);
+    const audits = await seed.serviceCapabilities.listAudit({ orgId: 'verified-org', projectId: project.id });
+    expect(audits.some(a => a.outcome === 'effect_started')).toBe(true);
+    expect(audits.some(a => a.outcome === 'revoked')).toBe(true);
+    expect(audits.some(a => a.outcome === 'succeeded')).toBe(true);
   });
 
   it('does not permit cross-tenant or widened issuance intent, wrong issuer, weak key or HTTP origin', async () => {
