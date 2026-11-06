@@ -2,7 +2,8 @@ import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { buildProjectAppEvidenceRoutes } from './source-control-app-evidence.js';
+import { buildProjectAppBindingRoutes } from './source-control-app-binding.js';
+import { buildProjectAppEvidenceRoutes, buildUnavailableProjectAppReadRoutes } from './source-control-app-evidence.js';
 import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 
 const ORG = 'org-htai-app-proof';
@@ -278,5 +279,165 @@ describe('project-scoped live GitHub App evidence GET', () => {
         .request(query(seed.project.id));
       expect(response.status).toBe(409);
     } finally { await seed.seed.storage.close(); }
+  });
+});
+
+function bindingQuery(seed: Awaited<ReturnType<typeof fixture>>, overrides: Record<string,string> = {}) {
+  const args = new URLSearchParams({
+    expectedOrgId: ORG,
+    repository: REPO,
+    expectedRepositoryId: '9988',
+    expectedOwnerId: '765',
+    expectedInstallationId: '12345',
+    expectedLinkId: seed.link.id,
+    expectedConnectionId: seed.connection.id,
+    expectedAutomationRevision: '0',
+    ...overrides,
+  });
+  return '/web/factory/projects/' + seed.project.id + '/source-control-binding?' + args;
+}
+
+function bindingApp(options: {
+  seed: Awaited<ReturnType<typeof fixture>>;
+  github: ReturnType<typeof fakeGithub>['github'];
+  user?: {workosId:string;organizationId?:string} | null;
+  admin?: boolean;
+  enabled?: boolean;
+  sourceControl?: unknown;
+}) {
+  const hono = new Hono();
+  const user = options.user === undefined ? PROJECT_OWNER : options.user;
+  hono.use('*', async (c,next) => {
+    if (user) c.set('factoryAuthUser' as never,user as never);
+    await next();
+  });
+  mountApiRoutes(hono as never, buildProjectAppBindingRoutes({
+    auth:fakeRouteAuth({enabled: options.enabled??true,
+      isOrganizationAdmin:async()=>options.admin??true}),
+    projects:options.seed.seed.projects,
+    sourceControl:(options.sourceControl??options.seed.sourceControl) as never,
+    github:options.github as never,enabled:true,
+  }));
+  return hono;
+}
+
+describe('project-wide authenticated GitHub App binding GET', () => {
+  it('returns a short-lived exact current project/repo/installation grant without any issue or PR', async () => {
+    const seed=await fixture();
+    try {
+      const provider=fakeGithub();
+      const response=await bindingApp({seed,github:provider.github})
+        .request(bindingQuery(seed));
+      expect(response.status).toBe(200);
+      const body=await response.json();
+      expect(body).toMatchObject({
+        version:'factory_app_project_scope_v1',
+        factoryOrgId:ORG,projectId:seed.project.id,projectName:'HTAI only',
+        projectRepositoryLinkId:seed.link.id,connectionId:seed.connection.id,
+        repository:{fullName:REPO,id:9988,ownerId:765},
+        installation:{installationId:12345,appSlug:'modelspend-factory',
+          repositoryAccessVerified:true},
+        projectAutomationRevision:0,
+      });
+      expect(body.bindingDigest).toMatch(/^[a-f0-9]{64}$/);
+      expect(body.expiresAtMs-body.readAtMs).toBe(90_000);
+      expect(provider.getGrantReads()).toBe(2);
+      expect(provider.getRepoReads()).toBe(2);
+      expect(Object.keys(body).sort()).toEqual([
+        'bindingDigest','connectionId','expiresAtMs','factoryOrgId','installation',
+        'projectAutomationRevision','projectId','projectName','projectRepositoryLinkId',
+        'readAtMs','repository','version',
+      ].sort());
+      expect(JSON.stringify(body)).not.toMatch(/token|pem|private.?key|client.?secret/i);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it('denies anonymous, cross-org, non-admin and Factory auth-disabled', async () => {
+    const seed=await fixture();
+    try {
+      const github=fakeGithub().github;
+      for(const [overrides,status] of [
+        [{user:null},401],
+        [{user:{workosId:'other',organizationId:'another'}},409],
+        [{admin:false},403],
+        [{enabled:false},401],
+      ] as const) {
+        const response=await bindingApp({seed,github,...overrides} as never)
+          .request(bindingQuery(seed));
+        expect(response.status).toBe(status);
+        expect(Object.keys(await response.json())).toEqual(['error']);
+      }
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it.each([
+    ['expectedOrgId','another'],['expectedRepositoryId','9999'],
+    ['expectedOwnerId','766'],['expectedInstallationId','12346'],
+    ['expectedLinkId','other-link'],['expectedConnectionId','other-connection'],
+    ['expectedAutomationRevision','1'],['repository','TheTekTeam/OTHER'],
+  ])('denies wrong pinned %s without leaking grant', async (key,value) => {
+    const seed=await fixture();
+    try {
+      const response=await bindingApp({seed,github:fakeGithub().github})
+        .request(bindingQuery(seed,{[key]:value}));
+      expect(response.status).toBe(409);
+      expect(Object.keys(await response.json())).toEqual(['error']);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it.each([
+    'revoked','repo-id-drift','grant-removed','grant-lost-after','grant-oversized',
+  ] as const)('denies %s even if public repo remains readable',async mode => {
+    const seed=await fixture();
+    try {
+      const response=await bindingApp({seed,github:fakeGithub(mode).github})
+        .request(bindingQuery(seed));
+      expect(response.status).toBe(409);
+      expect(Object.keys(await response.json())).toEqual(['error']);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it('denies a live DB project-repository link change during App grant reads',async () => {
+    const seed=await fixture();
+    try {
+      let calls=0;
+      const base=seed.sourceControl.projectRepositories.listByProject.bind(
+        seed.sourceControl.projectRepositories);
+      const sourceControl={
+        ...seed.sourceControl,
+        projectRepositories:{
+          ...seed.sourceControl.projectRepositories,
+          listByProject:async (scope:Parameters<typeof base>[0]) =>
+            ++calls===1?base(scope):[],
+        },
+      };
+      const response=await bindingApp({seed,github:fakeGithub().github,sourceControl})
+        .request(bindingQuery(seed));
+      expect(response.status).toBe(409);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it('disabled source-control routes give authenticated JSON404, never SPA200, and anonymous401',async () => {
+    const seed=await fixture();
+    try {
+      const auth=fakeRouteAuth({enabled:true});
+      const paths=[
+        '/web/factory/projects/:id/source-control-evidence',
+        '/web/factory/projects/:id/source-control-binding',
+      ];
+      const enabled=new Hono();
+      enabled.use('*',async(c,next)=>{c.set('factoryAuthUser' as never,PROJECT_OWNER as never);await next();});
+      mountApiRoutes(enabled as never,buildUnavailableProjectAppReadRoutes(auth,paths));
+      const anonymous=new Hono();
+      mountApiRoutes(anonymous as never,buildUnavailableProjectAppReadRoutes(auth,paths));
+      for(const suffix of ['source-control-evidence','source-control-binding']) {
+        const path='/web/factory/projects/'+seed.project.id+'/'+suffix;
+        const response=await enabled.request(path);
+        expect(response.status).toBe(404);
+        expect(response.headers.get('content-type')).toContain('application/json');
+        expect(await response.json()).toEqual({error:'not_found'});
+        expect((await anonymous.request(path)).status).toBe(401);
+      }
+    } finally {await seed.seed.storage.close();}
   });
 });

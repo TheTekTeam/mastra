@@ -227,6 +227,31 @@ export const FACTORY_API_ROUTE_METADATA = {
       "kind": "single"
     }
   },
+  "GET /web/factory/projects/:id/source-control-binding": {
+    "contractKey": "projectAppBindingGet",
+    "method": "GET",
+    "path": "/web/factory/projects/:id/source-control-binding",
+    "description": "Authenticated project-level live GitHub App numeric repository and installation grant evidence (no issue/PR or credentials)",
+    "pathParams": [
+      "id"
+    ],
+    "queryParams": [
+      "expectedAutomationRevision",
+      "expectedConnectionId",
+      "expectedInstallationId",
+      "expectedLinkId",
+      "expectedOrgId",
+      "expectedOwnerId",
+      "expectedRepositoryId",
+      "repository"
+    ],
+    "bodyParams": [],
+    "hasQuery": true,
+    "hasBody": false,
+    "responseShape": {
+      "kind": "single"
+    }
+  },
   "GET /web/factory/projects/:id/source-control-evidence": {
     "contractKey": "projectAppEvidenceGet",
     "method": "GET",
@@ -1613,6 +1638,188 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
       "required": [
         "metrics"
       ]
+    }
+  },
+  "GET /web/factory/projects/:id/source-control-binding": {
+    "path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "query": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "expectedOrgId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+        },
+        "expectedRepositoryId": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "expectedOwnerId": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "expectedInstallationId": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "expectedLinkId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectedConnectionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "expectedAutomationRevision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        }
+      },
+      "required": [
+        "expectedOrgId",
+        "repository",
+        "expectedRepositoryId",
+        "expectedOwnerId",
+        "expectedInstallationId",
+        "expectedLinkId",
+        "expectedConnectionId",
+        "expectedAutomationRevision"
+      ],
+      "additionalProperties": false
+    },
+    "response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "factory_app_project_scope_v1"
+        },
+        "factoryOrgId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "projectName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "projectRepositoryLinkId": {
+          "type": "string"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "object",
+          "properties": {
+            "fullName": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "ownerId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "fullName",
+            "id",
+            "ownerId"
+          ],
+          "additionalProperties": false
+        },
+        "installation": {
+          "type": "object",
+          "properties": {
+            "installationId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "appSlug": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repositoryAccessVerified": {
+              "type": "boolean",
+              "const": true
+            },
+            "verifiedAtMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "installationId",
+            "appSlug",
+            "repositoryAccessVerified",
+            "verifiedAtMs"
+          ],
+          "additionalProperties": false
+        },
+        "bindingDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "projectAutomationRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "readAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "version",
+        "factoryOrgId",
+        "projectId",
+        "projectName",
+        "projectRepositoryLinkId",
+        "connectionId",
+        "repository",
+        "installation",
+        "bindingDigest",
+        "projectAutomationRevision",
+        "readAtMs",
+        "expiresAtMs"
+      ],
+      "additionalProperties": false
     }
   },
   "GET /web/factory/projects/:id/source-control-evidence": {
@@ -3815,6 +4022,7 @@ export const FACTORY_API_ROUTE_CATALOG = {
   "projectEnvironmentBuildGet": "GET /web/factory/projects/:id/environment/builds/:buildId",
   "healthThresholdsGet": "GET /web/factory/projects/:id/health/thresholds",
   "metricsGet": "GET /web/factory/projects/:id/metrics",
+  "projectAppBindingGet": "GET /web/factory/projects/:id/source-control-binding",
   "projectAppEvidenceGet": "GET /web/factory/projects/:id/source-control-evidence",
   "workItemList": "GET /web/factory/projects/:id/work-items",
   "projectUpdate": "PATCH /web/factory/projects/:id",
