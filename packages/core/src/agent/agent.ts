@@ -50,6 +50,12 @@ import type {
 import { RegisteredLogger } from '../logger';
 import { AGENTIC_EXECUTION_WORKFLOW_ID, AGENTIC_LOOP_WORKFLOW_ID } from '../loop/loop-builder';
 import { networkLoop } from '../loop/network';
+import {
+  beforeCoreAgentPreparation,
+  beforeCoreDynamicModelResolution,
+  beforeCoreDynamicToolResolution,
+  assertCoreSynchronousIngress,
+} from '../loop/shared/core-effect-admission';
 import { getRunStreamSlot, getScopeStreamSlot } from '../loop/shared/stream-until-idle-helpers';
 import type { AgentLoopResumeClaim } from '../loop/types';
 // `Mastra` is imported type-only here: a runtime import would create an ESM
@@ -3734,6 +3740,8 @@ export class Agent<
     modelConfig: DynamicArgument<MastraModelConfig>,
     requestContext: RequestContext,
   ): Promise<MastraLanguageModel | MastraLegacyLanguageModel> {
+    const admission = beforeCoreDynamicModelResolution();
+    if (admission) await admission;
     try {
       return await resolveModelConfig(modelConfig, requestContext, this.#mastra);
     } catch (error) {
@@ -3838,6 +3846,8 @@ export class Agent<
     modelConfig: DynamicArgument<MastraModelConfig | ModelWithRetries[], TRequestContext> | ModelFallbacks,
     requestContext: RequestContext,
   ): Promise<ResolvedModelSelection> {
+    const admission = beforeCoreDynamicModelResolution();
+    if (admission) await admission;
     // If it's a dynamic function, resolve it
     if (typeof modelConfig === 'function') {
       const resolved = await modelConfig({
@@ -4259,6 +4269,7 @@ export class Agent<
    * @internal
    */
   __fork(): Agent<TAgentId, TTools, TOutput, TRequestContext> {
+    assertCoreSynchronousIngress('synchronous-clone-construction');
     const fork = new Agent<TAgentId, TTools, TOutput, TRequestContext>({
       ...this.#config,
       rawConfig: this.toRawConfig(),
@@ -7157,6 +7168,8 @@ export class Agent<
     /** @internal In-flight run messages, so recovery can restore processor-loaded tools. */
     runMessages?: MastraDBMessage[];
   }): Promise<Record<string, CoreTool>> {
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const requestContext = options.requestContext ?? new RequestContext();
     const defaultOptions = await this.getDefaultOptions({ requestContext });
     const mergedOptions = deepMerge(
@@ -7244,6 +7257,8 @@ export class Agent<
     model?: MastraLanguageModel | MastraLegacyLanguageModel;
     runMessages?: MastraDBMessage[];
   } & Partial<ObservabilityContext>): Promise<Record<string, CoreTool>> {
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const observabilityContext = resolveObservabilityContext(rest);
     let mastraProxy = undefined;
     const logger = this.logger;
@@ -9419,6 +9434,8 @@ export class Agent<
     options?: MultiPrimitiveExecutionOptions<OUTPUT>,
   ): Promise<MastraAgentNetworkStream<OUTPUT>>;
   async network<OUTPUT = undefined>(messages: MessageListInput, options?: MultiPrimitiveExecutionOptions<OUTPUT>) {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     const callerRequestContext = options?.requestContext || new RequestContext();
 
     // Merge default network options with call-specific options
@@ -9639,6 +9656,8 @@ export class Agent<
       structuredOutput?: PublicStructuredOutputOptions<any>;
     } & { model?: DynamicArgument<MastraModelConfig> },
   ): Promise<FullOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     // Route standalone `new Agent({ durable: true })` calls through the
     // durable execution path so callers using the agent outside of a
     // `Mastra` instance still get durable execution. When attached to
@@ -10453,6 +10472,8 @@ export class Agent<
       structuredOutput?: PublicStructuredOutputOptions<any>;
     } & { model?: DynamicArgument<MastraModelConfig> },
   ): Promise<MastraModelOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     // Route standalone `new Agent({ durable: true })` calls through the
     // durable execution path so callers using the agent outside of a
     // `Mastra` instance still get durable streams. When attached to Mastra,
@@ -11697,6 +11718,8 @@ export class Agent<
       model?: DynamicArgument<MastraModelConfig>;
     } = {},
   ): Promise<OUTPUT extends undefined ? GenerateTextResult<any, EXPERIMENTAL_OUTPUT> : GenerateObjectResult<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     return this.getLegacyHandler().generateLegacy(messages, generateOptions);
   }
 
@@ -11761,6 +11784,8 @@ export class Agent<
     | StreamTextResult<any, OUTPUT>
     | (StreamObjectResult<OUTPUT extends ZodSchema | JSONSchema7 ? OUTPUT : never> & TracingProperties)
   > {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     return this.getLegacyHandler().streamLegacy(messages, streamOptions) as Promise<
       | StreamTextResult<any, OUTPUT>
       | (StreamObjectResult<OUTPUT extends ZodSchema | JSONSchema7 ? OUTPUT : never> & TracingProperties)

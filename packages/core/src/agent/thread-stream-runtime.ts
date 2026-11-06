@@ -5,6 +5,7 @@ import { isLeaseProvider, NoopLeaseProvider } from '../events/pubsub';
 import type { LeaseProvider, PubSub } from '../events/pubsub';
 import type { EventCallback } from '../events/types';
 import { AGENTIC_LOOP_WORKFLOW_ID } from '../loop/loop-builder';
+import { beforeCoreAgentPreparation, assertCoreSynchronousIngress } from '../loop/shared/core-effect-admission';
 import { parseMemoryRequestContext } from '../memory/types';
 import { MASTRA_RESOURCE_ID_KEY, MASTRA_THREAD_ID_KEY, RequestContext } from '../request-context';
 import type { MastraModelOutput } from '../stream/base/output';
@@ -3659,6 +3660,8 @@ export class AgentThreadStreamRuntime {
     resume: () => Promise<MastraModelOutput<OUTPUT>>,
     pubsub?: PubSub,
   ): Promise<MastraModelOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     const state = this.#getState(pubsub);
     const previousTail = state.resumeTailsByRunId.get(runId) ?? Promise.resolve();
     let resolveStarted!: (output: MastraModelOutput<OUTPUT>) => void;
@@ -6846,6 +6849,7 @@ export class AgentThreadStreamRuntime {
     target: QueueAgentSignalOptions<OUTPUT>,
     pubsub?: PubSub,
   ): QueueAgentSignalResult<OUTPUT> {
+    assertCoreSynchronousIngress('synchronous-thread-signal');
     const state = this.#getState(pubsub);
     const acceptedAt = new Date();
     let key: string | undefined;
@@ -7014,6 +7018,7 @@ export class AgentThreadStreamRuntime {
     pubsub: PubSub | undefined,
     waitForIdle: boolean,
   ): SendAgentSignalResult<OUTPUT> {
+    assertCoreSynchronousIngress('synchronous-thread-signal');
     const target = withThreadTargetScopes(inputTarget, agent.getMastraInstance?.());
     const state = this.#getState(pubsub);
     let key: string | undefined;
