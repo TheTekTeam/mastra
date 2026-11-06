@@ -310,6 +310,29 @@ export class ServiceCapabilityAuthority {
     };
   }
 
+  async auditManagementDenial(input: {
+    orgId: string;
+    projectId: string;
+    userId: string;
+    operation: 'grant.issue' | 'grant.revoke';
+    reason: string;
+  }): Promise<void> {
+    await this.#storage.recordAudit({
+      grantId: null,
+      orgId: input.orgId,
+      projectId: input.projectId,
+      workItemId: null,
+      principalId: null,
+      actorId: input.userId,
+      action: input.operation,
+      requestId: null,
+      bodyFingerprint: null,
+      outcome: 'denied',
+      reason: input.reason,
+      occurredAt: new Date(),
+    });
+  }
+
   /** Appends the effect outcome without exposing token material. Failure is EFFECT_UNVERIFIED to the caller. */
   async finish(admission: ServiceCapabilityAdmission, outcome: ServiceCapabilityAuditEvent['outcome'], reason: string | null = null) {
     await this.#storage.recordAudit({
