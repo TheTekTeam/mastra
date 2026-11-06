@@ -93,6 +93,16 @@ export function buildProjectAppBindingRoutes(options: Options): ApiRoute[] {
             finalRepo.data.owner?.id !== args.expectedOwnerId)
           return c.json({ error: 'app_installation_access_lost' }, 409);
 
+        // The final remote GitHub call is an await: a link may be unlinked or
+        // the automation epoch advanced while that last grant check ran.
+        // Revalidate the durable DB scope AFTER it, immediately before reply.
+        const closingBinding = await binding(options, scope);
+        const closingProject = await options.projects.get({ orgId: tenant.orgId, id: args.projectId });
+        if (!closingBinding || closingBinding.bindingDigest !== before.bindingDigest ||
+            !closingProject || closingProject.name !== firstProject.name ||
+            closingProject.automationRevision !== before.projectAutomationRevision)
+          return c.json({ error: 'app_binding_changed' }, 409);
+
         const readAtMs = Date.now();
         return c.json({
           version: 'factory_app_project_scope_v1',

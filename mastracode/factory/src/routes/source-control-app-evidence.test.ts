@@ -60,7 +60,7 @@ type Variant = 'positive' | 'revoked' | 'repo-id-drift' | 'wrong-closing-repo' |
   'grant-removed' | 'grant-lost-after' | 'grant-oversized' |
   'repo-rename' | 'owner-transfer';
 
-function fakeGithub(mode: Variant = 'positive') {
+function fakeGithub(mode: Variant = 'positive', onFinalRepoRead?: () => Promise<void>) {
   let repoReads = 0;
   let grantReads = 0;
   let observedInstallation = 0;
@@ -86,6 +86,9 @@ function fakeGithub(mode: Variant = 'positive') {
         repos: {
           get: async () => {
             repoReads++;
+            // Inject an actual storage mutation into the LAST awaited remote
+            // grant/repository read, after the earlier DB revalidation.
+            if (repoReads === 2) await onFinalRepoRead?.();
             if (mode === 'revoked') throw Object.assign(new Error('forbidden'), { status: 403 });
             return { data: {
               id: mode === 'repo-id-drift' ? 9999 : 9988,
@@ -418,6 +421,45 @@ describe('project-wide authenticated GitHub App binding GET', () => {
       const response=await bindingApp({seed,github:fakeGithub().github,sourceControl})
         .request(bindingQuery(seed));
       expect(response.status).toBe(409);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it('denies a real DB unlink during the final awaited GitHub repository read', async () => {
+    const seed=await fixture();
+    try {
+      const provider=fakeGithub('positive',async () => {
+        expect(await seed.sourceControl.projectRepositories.unlink({
+          orgId:ORG,id:seed.link.id,
+        })).toBe(true);
+      });
+      const response=await bindingApp({seed,github:provider.github})
+        .request(bindingQuery(seed));
+      expect(provider.getRepoReads()).toBe(2);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({error:'app_binding_changed'});
+      expect(await seed.sourceControl.projectRepositories.listByProject({
+        orgId:ORG,projectId:seed.project.id,
+      })).toEqual([]);
+    } finally {await seed.seed.storage.close();}
+  });
+
+  it('denies an actual automation epoch advance during the last remote await', async () => {
+    const seed=await fixture();
+    try {
+      const provider=fakeGithub('positive',async () => {
+        const advanced=await seed.seed.projects.update({
+          orgId:ORG,id:seed.project.id,input:{autoRunEnabled:true},
+        });
+        expect(advanced?.automationRevision).toBe(1);
+      });
+      const response=await bindingApp({seed,github:provider.github})
+        .request(bindingQuery(seed));
+      expect(provider.getRepoReads()).toBe(2);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({error:'app_binding_changed'});
+      expect((await seed.seed.projects.get({
+        orgId:ORG,id:seed.project.id,
+      }))?.automationRevision).toBe(1);
     } finally {await seed.seed.storage.close();}
   });
 
