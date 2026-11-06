@@ -142,10 +142,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$FACTORY_QA_EXPECTED_HEAD"
-          packed="$(cd mastracode/factory && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --silent)"
-          test "$packed" = 'mastra-factory-0.25.0.tgz'
-          tarball="$RUNNER_TEMP/$packed"
+          mkdir -p "$RUNNER_TEMP/factory-pg18-pack"
+          (cd mastracode/factory && npm_config_ignore_scripts=true pnpm pack --pack-destination "$RUNNER_TEMP/factory-pg18-pack" >/dev/null)
+          tarball="$RUNNER_TEMP/factory-pg18-pack/mastra-factory-0.25.0.tgz"
           test -s "$tarball"
+          tar -xOf "$tarball" package/package.json | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const p=JSON.parse(s);if(p.name!=="@mastra/factory"||p.version!=="0.25.0"||Object.values(p.dependencies??{}).some(v=>typeof v==="string"&&v.startsWith("workspace:")))process.exit(1)})'
           (cd mastracode/web && corepack pnpm add --offline --ignore-scripts "@mastra/factory@file:$tarball")
           (cd mastracode/web/.mastra/output && corepack pnpm add --offline --ignore-scripts "@mastra/factory@file:$tarball")
           node mastracode/web/scripts/verify-better-auth-pg18.mjs
