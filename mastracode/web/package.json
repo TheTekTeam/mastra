@@ -13,7 +13,7 @@
     "dev": "rm -rf .mastra/output && PORT=${PORT:-5873} MASTRACODE_PUBLIC_URL=${MASTRACODE_PUBLIC_URL:-http://localhost:5873} MASTRA_SKIP_PEERDEP_CHECK=1 varlock run -- node ../../packages/cli/dist/index.js factory dev --dir src/mastra",
     "dev:ui": "pnpm db:up && pnpm prebuild && cd ../.. && pnpm turbo run dev dev:api --filter ./mastracode/factory-ui --filter ./packages/playground-ui --filter ./client-sdks/react --env-mode=loose",
     "dev:github": "pnpm db:up && pnpm dev",
-    "build": "node scripts/monorepo-deps.mjs run -- mastra build --dir src/mastra",
+    "build": "node scripts/monorepo-deps.mjs run -- node ../../packages/cli/dist/index.js build --dir src/mastra",
     "deploy": "pnpm run build && node scripts/validate-output.mjs && mastra deploy --skip-build",
     "start": "varlock run -- mastra start",
     "test": "vitest run",
