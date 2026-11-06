@@ -16,6 +16,7 @@ import type { LeaseProvider } from '../../events/pubsub';
 import type { EventCallback } from '../../events/types';
 import { Mastra } from '../../mastra';
 import type { Agent } from '../agent';
+import { createSignal } from '../signals';
 import { AgentThreadStreamRuntime } from '../thread-stream-runtime';
 
 const AGENT_THREAD_KEY_SEPARATOR = '\u0000';
@@ -114,6 +115,42 @@ class ControlledLeasePubSub extends PubSub implements LeaseProvider {
 }
 
 describe('registerRun thread lease', () => {
+  it('rejects idle wake on lease backend failure without starting an unowned run', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
+    pubsub.failAcquire = true;
+    const agent = { id: 'failed-lease-wake', stream: vi.fn() } as unknown as Agent<any, any, any, any>;
+    const threadId = 'failed-lease-thread';
+    const resourceId = 'failed-lease-user';
+
+    const signal = runtime.sendSignal(
+      agent,
+      createSignal({ type: 'user-message', contents: 'retry when the backend recovers' }),
+      { resourceId, threadId, ifIdle: { streamOptions: { memory: { thread: threadId, resource: resourceId } } } },
+      pubsub,
+    );
+    await expect(signal.accepted).rejects.toThrow('acquire failed');
+    expect(agent.stream).not.toHaveBeenCalled();
+    expect(pubsub.publishedTypes).not.toContain('run-registered');
+    expect(pubsub.owners).toHaveProperty('size', 0);
+    expect(runtime.getThreadState({ threadId, resourceId }, pubsub)).toBe('idle');
+
+    // A recovered backend with a different live owner must never reactivate
+    // the rejected local reservation or its provider execution.
+    const key = [resourceId, threadId].join(AGENT_THREAD_KEY_SEPARATOR);
+    pubsub.failAcquire = false;
+    pubsub.owners.set(key, 'healthy-remote-owner');
+    const retry = runtime.sendSignal(
+      agent,
+      createSignal({ type: 'user-message', contents: 'retry after backend recovery' }),
+      { resourceId, threadId },
+      pubsub,
+    );
+    await expect(retry.accepted).resolves.toMatchObject({ action: 'deliver', runId: 'healthy-remote-owner' });
+    expect(agent.stream).not.toHaveBeenCalled();
+    expect(pubsub.owners.get(key)).toBe('healthy-remote-owner');
+  });
+
   it('acquires the thread lease for a plain thread-bound run and releases it on completion', async () => {
     const runtime = new AgentThreadStreamRuntime();
     const pubsub = new ControlledLeasePubSub();

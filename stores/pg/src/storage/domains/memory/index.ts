@@ -133,8 +133,15 @@ import { assertRunFence, DB_NOW_MS, withRunFence } from '../../db/run-fencing';
 import type { Queryable } from '../../db/run-fencing';
 import { toPgJson } from '../../db/sanitize-json';
 import { runPrune, runBatchedDelete, resolveTargets } from '../../retention';
-import { PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS, PG_THREAD_PERSISTENCE_GUARD_VERSION } from './thread-persistence-guard';
-import type { PgThreadPersistenceGuardV1, PgThreadPersistenceGuardCapability, PgThreadPersistenceMutation } from './thread-persistence-guard';
+import {
+  PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS,
+  PG_THREAD_PERSISTENCE_GUARD_VERSION,
+} from './thread-persistence-guard';
+import type {
+  PgThreadPersistenceGuardV1,
+  PgThreadPersistenceGuardCapability,
+  PgThreadPersistenceMutation,
+} from './thread-persistence-guard';
 
 // Database row type that includes timezone-aware columns
 type MessageRowFromDB = {
@@ -479,8 +486,13 @@ export class MemoryPG extends MemoryStorage {
   /** Machine-readable opt-in only; never implies that Core A2 is installed. */
   getThreadPersistenceGuardCapability(): PgThreadPersistenceGuardCapability {
     return this.#threadPersistenceGuard
-      ? { backend: 'postgres', version: 1, installed: true, adoptionReady: false,
-          operations: PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS }
+      ? {
+          backend: 'postgres',
+          version: 1,
+          installed: true,
+          adoptionReady: false,
+          operations: PG_THREAD_PERSISTENCE_GUARDED_OPERATIONS,
+        }
       : { backend: 'postgres', version: 1, installed: false, adoptionReady: false, operations: [] };
   }
 
@@ -753,7 +765,8 @@ export class MemoryPG extends MemoryStorage {
         };
 
         await this.#admitThreadMutation(t, {
-          operation: 'move', previous: normalized,
+          operation: 'move',
+          previous: normalized,
           proposed: { ...normalized, resourceId },
         });
         if (thread.resourceId === resourceId) {
@@ -914,19 +927,23 @@ export class MemoryPG extends MemoryStorage {
       const createdAt = toUtcISOString(thread.createdAt);
       const updatedAt = toUtcISOString(thread.updatedAt);
       const metadataJson = thread.metadata ? toPgJson(thread.metadata) : null;
-      await this.#withThreadMutation(fence, 'saveThread', async q => {
-        // Serializes same-ID create/upsert attempts across independent PG pools,
-        // so the guard observes the actual prior row before an ON CONFLICT.
-        await q.one('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [thread.id]);
-        await q.oneOrNone(`SELECT id FROM ${tableName} WHERE id = $1 FOR UPDATE`, [thread.id]);
-        return {
-          operation: 'save',
-          previous: await this.#getThreadById(q, { threadId: thread.id }),
-          proposed: thread,
-        };
-      }, q =>
-        q.none(
-          `INSERT INTO ${tableName} (
+      await this.#withThreadMutation(
+        fence,
+        'saveThread',
+        async q => {
+          // Serializes same-ID create/upsert attempts across independent PG pools,
+          // so the guard observes the actual prior row before an ON CONFLICT.
+          await q.one('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [thread.id]);
+          await q.oneOrNone(`SELECT id FROM ${tableName} WHERE id = $1 FOR UPDATE`, [thread.id]);
+          return {
+            operation: 'save',
+            previous: await this.#getThreadById(q, { threadId: thread.id }),
+            proposed: thread,
+          };
+        },
+        q =>
+          q.none(
+            `INSERT INTO ${tableName} (
           id,
           "resourceId",
           title,
@@ -944,8 +961,8 @@ export class MemoryPG extends MemoryStorage {
           "createdAtZ" = EXCLUDED."createdAtZ",
           "updatedAt" = EXCLUDED."updatedAt",
           "updatedAtZ" = EXCLUDED."updatedAtZ"`,
-          [thread.id, thread.resourceId, thread.title, metadataJson, createdAt, createdAt, updatedAt, updatedAt],
-        ),
+            [thread.id, thread.resourceId, thread.title, metadataJson, createdAt, createdAt, updatedAt, updatedAt],
+          ),
       );
 
       return { ...thread, metadata: metadataJson ? JSON.parse(metadataJson) : thread.metadata };
@@ -978,40 +995,43 @@ export class MemoryPG extends MemoryStorage {
   }): Promise<StorageThreadType> {
     const threadTableName = getTableName({ indexName: TABLE_THREADS, schemaName: getSchemaName(this.#schema) });
     try {
-      return await this.#withThreadMutation(fence, 'updateThread', async q => {
-        await q.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [id]);
-        const previous = await this.#getThreadById(q, { threadId: id });
-        return {
-          operation: 'update',
-          previous,
-          proposed: previous
-            ? { ...previous, title: title ?? previous.title,
-                metadata: { ...previous.metadata, ...metadata } }
-            : null,
-        };
-      }, async q => {
-        const existingThread = await this.#getThreadById(q, { threadId: id });
-        if (!existingThread) {
-          throw new MastraError({
-            id: createStorageErrorId('PG', 'UPDATE_THREAD', 'FAILED'),
-            domain: ErrorDomain.STORAGE,
-            category: ErrorCategory.USER,
-            text: `Thread ${id} not found`,
-            details: {
-              threadId: id,
-              title: title ?? null,
-            },
-          });
-        }
+      return await this.#withThreadMutation(
+        fence,
+        'updateThread',
+        async q => {
+          await q.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [id]);
+          const previous = await this.#getThreadById(q, { threadId: id });
+          return {
+            operation: 'update',
+            previous,
+            proposed: previous
+              ? { ...previous, title: title ?? previous.title, metadata: { ...previous.metadata, ...metadata } }
+              : null,
+          };
+        },
+        async q => {
+          const existingThread = await this.#getThreadById(q, { threadId: id });
+          if (!existingThread) {
+            throw new MastraError({
+              id: createStorageErrorId('PG', 'UPDATE_THREAD', 'FAILED'),
+              domain: ErrorDomain.STORAGE,
+              category: ErrorCategory.USER,
+              text: `Thread ${id} not found`,
+              details: {
+                threadId: id,
+                title: title ?? null,
+              },
+            });
+          }
 
-        const mergedMetadata = {
-          ...existingThread.metadata,
-          ...metadata,
-        };
+          const mergedMetadata = {
+            ...existingThread.metadata,
+            ...metadata,
+          };
 
-        const nowStr = toUtcISOString(new Date());
-        const thread = await q.one<StorageThreadType & { createdAtZ: Date; updatedAtZ: Date }>(
-          `UPDATE ${threadTableName}
+          const nowStr = toUtcISOString(new Date());
+          const thread = await q.one<StorageThreadType & { createdAtZ: Date; updatedAtZ: Date }>(
+            `UPDATE ${threadTableName}
                     SET
                         title = COALESCE($1, title),
                         metadata = $2,
@@ -1020,18 +1040,19 @@ export class MemoryPG extends MemoryStorage {
                     WHERE id = $5
                     RETURNING *
                 `,
-          [title ?? null, mergedMetadata, nowStr, nowStr, id],
-        );
+            [title ?? null, mergedMetadata, nowStr, nowStr, id],
+          );
 
-        return {
-          id: thread.id,
-          resourceId: thread.resourceId,
-          title: thread.title,
-          metadata: typeof thread.metadata === 'string' ? JSON.parse(thread.metadata) : thread.metadata,
-          createdAt: thread.createdAtZ || thread.createdAt,
-          updatedAt: thread.updatedAtZ || thread.updatedAt,
-        };
-      });
+          return {
+            id: thread.id,
+            resourceId: thread.resourceId,
+            title: thread.title,
+            metadata: typeof thread.metadata === 'string' ? JSON.parse(thread.metadata) : thread.metadata,
+            createdAt: thread.createdAtZ || thread.createdAt,
+            updatedAt: thread.updatedAtZ || thread.updatedAt,
+          };
+        },
+      );
     } catch (error) {
       if (error instanceof MastraError || isRunFenceConflictError(error)) throw error;
       throw new MastraError(
@@ -1054,10 +1075,15 @@ export class MemoryPG extends MemoryStorage {
       const tableName = getTableName({ indexName: TABLE_MESSAGES, schemaName: getSchemaName(this.#schema) });
       const threadTableName = getTableName({ indexName: TABLE_THREADS, schemaName: getSchemaName(this.#schema) });
       await this.#db.client.tx(async t => {
-        await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [threadId]);
-        await this.#admitThreadMutation(t, {
-          operation: 'delete', previous: await this.#getThreadById(t, { threadId }), proposed: null,
-        });
+        if (this.#threadPersistenceGuard) {
+          // Preserve the existing unguarded delete query/lock order exactly.
+          await t.oneOrNone(`SELECT id FROM ${threadTableName} WHERE id = $1 FOR UPDATE`, [threadId]);
+          await this.#admitThreadMutation(t, {
+            operation: 'delete',
+            previous: await this.#getThreadById(t, { threadId }),
+            proposed: null,
+          });
+        }
         await t.none(`DELETE FROM ${tableName} WHERE thread_id = $1`, [threadId]);
 
         const schemaName = this.#schema || 'public';
@@ -2418,7 +2444,10 @@ export class MemoryPG extends MemoryStorage {
             throw new Error('Guarded clone source changed before native effect');
           }
           await this.#admitThreadMutation(t, {
-            operation: 'copy', previous: null, proposed: newThread, copySource: sourceAtCommit,
+            operation: 'copy',
+            previous: null,
+            proposed: newThread,
+            copySource: sourceAtCommit,
           });
         }
 

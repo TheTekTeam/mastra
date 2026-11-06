@@ -47,6 +47,7 @@ import {
   TOOL_PAYLOAD_TRANSFORM_KEY,
 } from '../../run-scope-keys';
 import { approvalResumeSchema } from '../../shared/approval-schema';
+import { CoreEffectAdmissionDeniedError } from '../../shared/core-effect-admission';
 import { dispatchBackgroundTool } from '../../shared/steps/background-dispatch-core';
 import { applyBackgroundToolResult } from '../../shared/steps/background-task-result-core';
 import { executeToolCall } from '../../shared/steps/execute-tool-core';
@@ -1461,6 +1462,12 @@ export function createToolCallStep<Tools extends ToolSet = ToolSet, OUTPUT = und
 
         return { result: outcome.result, ...inputData, ...(approvalGrant ?? {}) };
       } catch (error) {
+        // Epoch/lease denial is fatal control flow, never a model-visible
+        // recoverable tool result. Do this before cancellation or bailout
+        // handlers so a denied effect cannot be marked successful on retry.
+        if (error instanceof CoreEffectAdmissionDeniedError) {
+          throw error;
+        }
         // Re-throw FGA authorization errors instead of swallowing them
         if (error instanceof Error && error.name === 'FGADeniedError') {
           throw error;

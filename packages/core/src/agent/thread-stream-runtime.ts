@@ -7393,20 +7393,17 @@ export class AgentThreadStreamRuntime {
         throw error;
       }
 
-      // Fail-open on pubsub errors: if the lease backend is unreachable we treat the
-      // call as "acquired" so the caller still gets a response. The tradeoff is that
-      // if multiple processes hit the same pubsub failure simultaneously they can each
-      // start a stream for the same thread (the bug this lease is supposed to prevent),
-      // but failing closed would silently drop user messages on any Redis blip which
-      // is the worse failure mode. Lease TTL + renewal still bound the duplicate
-      // window to a single run, and the next clean acquireLease re-serializes callers.
-      const lease = await this.#waitForRetakeOwner(
-        leaseProvider,
-        reservedKey,
-        await leaseProvider
-          .acquireLease(reservedKey, reservedRunId, AGENT_THREAD_LEASE_TTL_MS)
-          .catch(() => ({ acquired: true as boolean, owner: reservedRunId as string | undefined })),
-      );
+      // A lost lease acknowledgement is NOT proof of ownership. If the pubsub
+      // backend cannot answer, keep the signal retryable and do not start an
+      // unowned competing model run or falsely acknowledge delivery.
+      let acquiredLease: { acquired: boolean; owner?: string };
+      try {
+        acquiredLease = await leaseProvider.acquireLease(reservedKey, reservedRunId, AGENT_THREAD_LEASE_TTL_MS);
+      } catch (error) {
+        this.releaseThreadRunReservation(reservedRunId, resolvedPubSub);
+        throw error;
+      }
+      const lease = await this.#waitForRetakeOwner(leaseProvider, reservedKey, acquiredLease);
 
       if (!lease.acquired) {
         // Lost the wake race to another process. Roll back our optimistic local reservation

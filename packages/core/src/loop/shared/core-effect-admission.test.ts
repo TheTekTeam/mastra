@@ -24,6 +24,12 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
       nativeSourceResolverInstalled: false,
     });
     expect(Object.isFrozen(CORE_EFFECT_ADMISSION_CAPABILITY)).toBe(true);
+    expect(CORE_EFFECT_ADMISSION_CAPABILITY.unsupportedEffectSources).toEqual([
+      'eager-provider-construction',
+      'direct-remote-gateway-execution',
+      'provider-executed-tools',
+    ]);
+    expect(Object.isFrozen(CORE_EFFECT_ADMISSION_CAPABILITY.unsupportedEffectSources)).toBe(true);
     expect(beforeCoreModelProviderRequest()).toBeUndefined();
     expect(beforeCoreNativeToolExecute()).toBeUndefined();
     expect(beforeCoreAgentPreparation()).toBeUndefined();
