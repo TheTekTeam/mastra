@@ -88,9 +88,9 @@ export const SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA: CollectionSchema = {
     settled_at: { type: 'timestamp', nullable: true },
     outcome: { type: 'text', nullable: true },
   },
+  uniqueIndexes: [{ name: 'service_capability_one_intent_per_request', columns: ['grant_id', 'action', 'request_id'] }],
   indexes: [
     { name: 'service_capability_leases_project', columns: ['org_id', 'project_id', 'admitted_at'] },
-    { name: 'service_capability_leases_request', columns: ['grant_id', 'request_id'] },
   ],
 };
 
@@ -258,7 +258,7 @@ function toAudit(row: AuditDbRow): ServiceCapabilityAuditEvent {
 export type ServiceCapabilityAuditInput = Omit<ServiceCapabilityAuditEvent, 'id'>;
 export type ServiceCapabilityGrantIssue = Pick<
   ServiceCapabilityGrant,
-  'principalId' | 'orgId' | 'projectId' | 'actions' | 'workItemIds' | 'tokenHash' | 'issuedByUserId' | 'issuedAt' | 'expiresAt'
+  'principalId' | 'orgId' | 'projectId' | 'actions' | 'workItemIds' | 'enqueueProfiles' | 'tokenHash' | 'issuedByUserId' | 'issuedAt' | 'expiresAt'
 >;
 
 export interface ServiceCapabilityConsentInput {
@@ -342,7 +342,15 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
              profile.skillName === input.skillName &&
              profile.argumentsDigest === input.argumentsDigest))),
       );
-      const lease = allowed && row
+      // A request identity belongs to one immutable intent. Never replay even
+      // an identical request automatically after a crash or uncertain effect.
+      const prior = row
+        ? await ops.findOne<LeaseDbRow>('service_capability_effect_leases', {
+            grant_id: row.id, action: input.action, request_id: input.requestId,
+          })
+        : null;
+      const fresh = allowed && !prior;
+      const lease = fresh && row
         ? await ops.insertOne<LeaseDbRow>('service_capability_effect_leases', {
             grant_id: row.id,
             grant_version: row.version,
@@ -369,11 +377,13 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         action: input.action,
         requestId: input.requestId,
         bodyFingerprint: input.bodyFingerprint,
-        outcome: allowed ? 'admitted' : 'denied',
-        reason: allowed ? null : 'invalid_or_out_of_scope',
+        outcome: fresh ? 'admitted' : 'denied',
+        reason: prior ? (prior.body_fingerprint === input.bodyFingerprint
+          ? 'duplicate_request_requires_reconciliation'
+          : 'request_id_conflict') : (fresh ? null : 'invalid_or_out_of_scope'),
         occurredAt: admissionNow,
       });
-      return allowed && row && lease ? { grant: toGrant(row), lease: toLease(lease) } : null;
+      return fresh && row && lease ? { grant: toGrant(row), lease: toLease(lease) } : null;
     });
   }
 
