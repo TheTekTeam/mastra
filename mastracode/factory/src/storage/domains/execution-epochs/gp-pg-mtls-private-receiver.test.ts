@@ -110,6 +110,7 @@ async function fixture(){
     enabled:true,
     trustedKey:{keyId:'gp-test-pinned-2026',publicKey},
     resolvePrivateRequest:ingress.resolvePrivateIssue,
+    resolvePrivateReceipt:ingress.resolvePrivateReceipt,
     resolvePrivateRevokeIdentity:ingress.resolvePrivateRevokeIdentity,
     resolvePrivateRevoke:ingress.resolvePrivateRevoke,
     readAuthenticatedPm:async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
@@ -203,15 +204,21 @@ describe('Factory default-off GP PG mutual TLS ingress',()=>{
         requestId:f.s.bridgeChallengeId,projectId:f.s.projectId,
         leaseIntentId:f.s.leaseIntentId,scopeTupleSha256:gpV9ScopeTupleDigest(f.s),
         packet:f.packet};
+      const absent=await remoteWorker({...f.client,body,path:'receipt'});
+      expect(absent.body.status).toBe('unknown');
       const first=await remoteWorker({...f.client,body});
       expect(first.http).toBe(200);
       expect(first.body.status).toBe('issued');
+      const confirmed=await remoteWorker({...f.client,body,path:'receipt'});
+      expect(confirmed.body.status).toBe('issued');
       const again=await remoteWorker({...f.client,body});
       expect(again.body.status).toBe('denied');
       const revoked=await remoteWorker({...f.client,body:{
         ...body,kind:'revoke',requestId:randomUUID()
       }});
       expect(revoked.body.status).toBe('revoked');
+      const revokedReceipt=await remoteWorker({...f.client,body,path:'receipt'});
+      expect(revokedReceipt.body.status).toBe('revoked');
       const after=await remoteWorker({...f.client,body});
       expect(after.body.status).toBe('denied');
     }finally{await f.dispose();}

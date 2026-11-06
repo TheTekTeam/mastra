@@ -3,7 +3,7 @@ import { X509Certificate } from 'node:crypto';
 import { request as httpsRequest } from 'node:https';
 const input=JSON.parse(process.env.FACTORY_GP_PG_TLS_TEST_INPUT??'null');
 if(!input)throw new Error('isolated TLS worker input required');
-const u=new URL('https://127.0.0.1:'+input.port+'/private/gp-pg/v1/'+input.body.kind);
+const u=new URL('https://127.0.0.1:'+input.port+'/private/gp-pg/v1/'+(input.path??input.body.kind));
 const data=JSON.stringify(input.body);
 const req=httpsRequest(u,{
   method:'POST',servername:'factory.local',rejectUnauthorized:true,

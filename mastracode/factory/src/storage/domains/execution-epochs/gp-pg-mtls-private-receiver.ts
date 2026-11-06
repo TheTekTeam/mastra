@@ -94,6 +94,13 @@ export class FactoryGpPgPrivateMtlsIngress {
     return { packet: body.packet, scope: body.packet.payload.scope, ttlSeconds: 60 };
   };
 
+  resolvePrivateReceipt = (context: object) => {
+    const body = this.#contexts.get(context);
+    if (!this.#enabled || !body) return null;
+    return { scope: body.packet.payload.scope, leaseIntentId: body.leaseIntentId,
+      scopeTupleSha256: body.scopeTupleSha256 };
+  };
+
   resolvePrivateRevokeIdentity = (context: object): {
     factoryOrgId: string; projectId: string;
   } | null => {
@@ -134,7 +141,8 @@ export class FactoryGpPgPrivateMtlsIngress {
       }
       if (request.method !== 'POST' ||
         (request.url !== '/private/gp-pg/v1/issue' &&
-          request.url !== '/private/gp-pg/v1/revoke') ||
+          request.url !== '/private/gp-pg/v1/revoke' &&
+          request.url !== '/private/gp-pg/v1/receipt') ||
         !String(request.headers['content-type']).startsWith('application/json')) {
         response.writeHead(404).end();
         return;
@@ -151,15 +159,17 @@ export class FactoryGpPgPrivateMtlsIngress {
           try {
             const body: unknown = JSON.parse(raw);
             if (!isBody(body) ||
-              request.url !== '/private/gp-pg/v1/' + body.kind) {
+              (request.url !== '/private/gp-pg/v1/receipt' &&
+                request.url !== '/private/gp-pg/v1/' + body.kind)) {
               response.writeHead(400).end();
               return;
             }
             const context = Object.freeze({ nonce: Symbol('factory-gp-pg-private-request') });
             this.#contexts.set(context, body);
             try {
-              const status = body.kind === 'issue' ?
-                await this.#issuer!.issue(context) : await this.#issuer!.revoke(context);
+              const status = request.url === '/private/gp-pg/v1/receipt' ?
+                await this.#issuer!.receipt(context) : body.kind === 'issue' ?
+                  await this.#issuer!.issue(context) : await this.#issuer!.revoke(context);
               const ack = { requestId: body.requestId, kind: body.kind,
                 projectId: body.projectId, leaseIntentId: body.leaseIntentId,
                 scopeTupleSha256: body.scopeTupleSha256, status };
