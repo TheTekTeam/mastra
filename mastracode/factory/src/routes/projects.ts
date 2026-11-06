@@ -597,6 +597,44 @@ export class ProjectRoutes extends Route<ProjectRoutesDeps> {
           return project ? context.json({ project }) : context.json({ error: 'Project not found' }, 404);
         },
       }),
+      registerApiRoute(FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.path, {
+        method: FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.method,
+        requiresAuth: false,
+        handler: async routeContext => {
+          const context = loose(routeContext);
+          const tenant = await this.#resolveTenant(context);
+          if ('response' in tenant) return tenant.response;
+          const parsedPath = FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.pathSchema.safeParse({
+            id: context.req.param('id'),
+          });
+          if (!parsedPath.success) return context.json({ error: 'Project not found' }, 404);
+          // A signed-in organization admin is required even when Factory auth is configured off.
+          // Service grants must use a separate, explicitly scoped authorization seam later.
+          if (!this.deps.auth.enabled() || !(await this.deps.auth.isOrganizationAdmin(context, tenant.orgId))) {
+            return context.json(
+              { error: 'forbidden', message: 'Organization administrator access is required for automation handover.' },
+              403,
+            );
+          }
+          const parsedBody = FACTORY_ROUTE_CONTRACTS.projectAutomationCompareAndSet.bodySchema.safeParse(
+            await readJson(context),
+          );
+          if (!parsedBody.success) return context.json({ error: 'invalid_project_automation' }, 400);
+          const result = await (await this.#projects()).compareAndSetAutomation({
+            orgId: tenant.orgId,
+            id: parsedPath.data.id,
+            ...parsedBody.data,
+          });
+          if (result.status === 'not_found') return context.json({ error: 'Project not found' }, 404);
+          if (result.status === 'conflict') {
+            return context.json(
+              { error: 'automation_state_conflict', automationRevision: result.project.automationRevision },
+              409,
+            );
+          }
+          return context.json({ project: result.project });
+        },
+      }),
       registerApiRoute(FACTORY_ROUTE_CONTRACTS.projectApplyDefaultModel.path, {
         method: FACTORY_ROUTE_CONTRACTS.projectApplyDefaultModel.method,
         requiresAuth: false,
