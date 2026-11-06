@@ -175,6 +175,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
   routes(): ApiRoute[] {
     const { workItems, configVersion } = this.deps;
     const contract = FACTORY_ROUTE_CONTRACTS.workItemAutomationRun;
+    const receiptContract = FACTORY_ROUTE_CONTRACTS.automationRunReceipt;
 
     return [
       registerApiRoute(contract.path, {
@@ -290,6 +291,37 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             { status: 'rejected', ...(code ? { code } : {}), requestId: request.requestId },
             code === 'stale' ? 409 : 422,
           );
+        },
+      }),
+      registerApiRoute(receiptContract.path, {
+        method: receiptContract.method,
+        handler: async c => {
+          const context = loose(c);
+          const resolved = await this.#resolveProject(context);
+          if ('response' in resolved) return resolved.response;
+
+          const parsedPath = receiptContract.pathSchema.safeParse({
+            id: c.req.param('id'),
+            requestId: c.req.param('requestId'),
+          });
+          if (!parsedPath.success) return c.json({ error: 'Enqueue receipt not found' }, 404);
+
+          const result = await workItems.getEnqueueReceipt(
+            resolved.orgId,
+            resolved.factoryProjectId,
+            parsedPath.data.requestId,
+          );
+          if (result.kind === 'found') {
+            // Revalidate the persisted binding at the wire boundary. A damaged
+            // but hash-consistent row must not become a successful receipt.
+            const validated = receiptContract.responseSchema.safeParse(result.receipt);
+            if (!validated.success || validated.data.skillName !== result.receipt.skillName) {
+              return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
+            }
+            return c.json(validated.data);
+          }
+          if (result.kind === 'missing') return c.json({ error: 'Enqueue receipt not found' }, 404);
+          return c.json({ error: 'Enqueue receipt not independently verifiable' }, 409);
         },
       }),
     ];

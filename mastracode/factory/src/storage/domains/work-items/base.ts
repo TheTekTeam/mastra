@@ -237,6 +237,23 @@ export interface FactoryDecisionStatusPageInput {
   limit: number;
 }
 
+/** Read-only proof of the durable native decision bound to one external enqueue. */
+export interface FactoryEnqueueReceipt {
+  projectId: string;
+  requestId: string;
+  workItemId: string;
+  role: string;
+  skillName: string;
+  argumentsSha256: string;
+  expectedRevision: number;
+  nativeEffectId: string;
+  decisionStatus: FactoryDispatchStatus;
+}
+
+export type FactoryEnqueueReceiptLookup =
+  | { kind: 'found'; receipt: FactoryEnqueueReceipt }
+  | { kind: 'missing' | 'ambiguous' };
+
 export interface FactoryDeferredDecisionRecord {
   id: string;
   orgId: string;
@@ -2191,6 +2208,124 @@ export class WorkItemsStorage extends FactoryStorageDomain {
       org_id: orgId,
       factory_project_id: factoryProjectId,
       status: { in: statuses },
+    });
+  }
+
+  /**
+   * Read a committed external-orchestrator request from its durable ingress,
+   * evaluation and deferred-effect rows in one storage snapshot. The requestId
+   * alone is not proof of a skill dispatch: only exactly one internally
+   * consistent accepted binding produces a receipt. This never starts work.
+   */
+  async getEnqueueReceipt(
+    orgId: string,
+    factoryProjectId: string,
+    requestId: string,
+  ): Promise<FactoryEnqueueReceiptLookup> {
+    const identity = `external-orchestrator:${requestId}`;
+    return this.storage.withTransaction<FactoryEnqueueReceiptLookup>(async ops => {
+      const ingress = await ops.findOne<GovernanceDbRow>('factory_rule_ingress', {
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+        identity,
+      });
+      if (!ingress) return { kind: 'missing' };
+      if (ingress.trigger_type !== 'external-orchestrator.invoke-skill') return { kind: 'ambiguous' };
+      const result = ingress.result;
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return { kind: 'ambiguous' };
+      const record = result as Record<string, unknown>;
+      if (
+        record.status !== 'accepted' ||
+        typeof record.itemId !== 'string' ||
+        !Array.isArray(record.decisions) ||
+        record.decisions.length !== 1
+      ) {
+        return { kind: 'ambiguous' };
+      }
+
+      const committed = record.decisions[0];
+      if (!committed || typeof committed !== 'object' || Array.isArray(committed)) return { kind: 'ambiguous' };
+      const decision = committed as Record<string, unknown>;
+      if (
+        decision.type !== 'invokeSkill' ||
+        decision.idempotencyKey !== identity ||
+        typeof decision.role !== 'string' ||
+        decision.role.length === 0 ||
+        typeof decision.skillName !== 'string' ||
+        decision.skillName.length === 0 ||
+        (decision.arguments !== undefined && typeof decision.arguments !== 'string')
+      ) {
+        return { kind: 'ambiguous' };
+      }
+
+      const evaluations = await ops.findMany<GovernanceDbRow>(
+        'factory_rule_evaluations',
+        { ingress_id: ingress.id },
+        { limit: 2 },
+      );
+      if (evaluations.length !== 1) return { kind: 'ambiguous' };
+      const evaluation = evaluations[0]!;
+      const expectedRevision = evaluation.expected_revision;
+      if (
+        evaluation.outcome !== 'accepted' ||
+        evaluation.work_item_id !== record.itemId ||
+        !Number.isSafeInteger(expectedRevision) ||
+        (expectedRevision as number) < 1 ||
+        record.revision !== expectedRevision
+      ) {
+        return { kind: 'ambiguous' };
+      }
+
+      const effects = await ops.findMany<GovernanceDbRow>(
+        'factory_deferred_decisions',
+        {
+          org_id: orgId,
+          factory_project_id: factoryProjectId,
+          evaluation_id: evaluation.id,
+          idempotency_key: identity,
+        },
+        { limit: 2 },
+      );
+      if (effects.length !== 1) return { kind: 'ambiguous' };
+      const effect = effects[0]!;
+      const effectActor = effect.actor as Record<string, unknown> | null;
+      const statuses: readonly string[] = [
+        'pending', 'proposed', 'dismissed', 'superseded', 'leased', 'retry', 'succeeded', 'failed',
+      ];
+      const effectDecision = effect.decision;
+      if (
+        effect.work_item_id !== record.itemId ||
+        effect.effect_ordinal !== 0 ||
+        effect.effect_hash !== factoryDecisionHash(decision) ||
+        !effectDecision ||
+        typeof effectDecision !== 'object' ||
+        Array.isArray(effectDecision) ||
+        factoryDecisionHash(effectDecision as Record<string, unknown>) !== effect.effect_hash ||
+        effectActor?.type !== 'system' ||
+        effectActor?.id !== 'factory-external-orchestrator' ||
+        typeof effect.status !== 'string' ||
+        !statuses.includes(effect.status) ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effect.id)
+      ) {
+        return { kind: 'ambiguous' };
+      }
+
+      return {
+        kind: 'found',
+        receipt: {
+          projectId: factoryProjectId,
+          requestId,
+          workItemId: record.itemId,
+          role: decision.role,
+          skillName: decision.skillName,
+          argumentsSha256: createHash('sha256')
+            .update(JSON.stringify(decision.arguments ?? null))
+            .digest('hex'),
+          expectedRevision: expectedRevision as number,
+          nativeEffectId: effect.id,
+          decisionStatus: effect.status as FactoryDispatchStatus,
+        },
+      };
     });
   }
 

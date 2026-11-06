@@ -43,6 +43,7 @@ const projectPathSchema = z.object({ id: uuidSchema });
 const projectDecisionPathSchema = z.object({ id: uuidSchema, decisionId: uuidSchema });
 const workItemPathSchema = z.object({ id: uuidSchema });
 const transitionPathSchema = z.object({ id: uuidSchema, workItemId: uuidSchema });
+const automationReceiptPathSchema = z.object({ id: uuidSchema, requestId: uuidSchema });
 
 const projectSchema = entitySchema;
 const projectResponseSchema = z.object({ project: projectSchema });
@@ -658,6 +659,23 @@ export const FACTORY_ROUTE_CONTRACTS = {
     pathSchema: transitionPathSchema,
     bodySchema: automationRunStartBodySchema,
     responseSchema: entitySchema,
+  },
+  automationRunReceipt: {
+    method: 'GET',
+    path: '/web/factory/projects/:id/automation-runs/:requestId',
+    description: 'Read the durable identity of an external enqueue without starting or retrying work',
+    pathSchema: automationReceiptPathSchema,
+    responseSchema: z.object({
+      projectId: uuidSchema,
+      requestId: uuidSchema,
+      workItemId: uuidSchema,
+      role: z.enum(FACTORY_ROLE_VALUES),
+      skillName: nonEmptyTrimmed(128),
+      argumentsSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      expectedRevision: z.number().int().min(1),
+      nativeEffectId: uuidSchema,
+      decisionStatus: decisionStatusSchema,
+    }),
   },
   decisionList: {
     method: 'GET',
