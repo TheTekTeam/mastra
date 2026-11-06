@@ -639,9 +639,19 @@ export class ProjectRoutes extends Route<ProjectRoutesDeps> {
             } catch {
               return context.json({ error: 'service_admission_unavailable' }, 503);
             }
+            const projectStorage = await this.#projects();
+            try {
+              const started = await capabilities.beginEffect(admission);
+              if (!started) {
+                await capabilities.finish(admission, 'rejected', 'revoked_or_lease_expired_before_native_start');
+                return context.json({ error: 'service_capability_revoked_or_expired' }, 403);
+              }
+            } catch {
+              return context.json({ error: 'service_effect_start_unverified' }, 503);
+            }
             let result;
             try {
-              result = await (await this.#projects()).compareAndSetAutomation({
+              result = await projectStorage.compareAndSetAutomation({
                 orgId: admission.orgId,
                 id: admission.projectId,
                 ...parsedServiceBody.data,
