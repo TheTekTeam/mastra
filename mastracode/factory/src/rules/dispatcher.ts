@@ -866,7 +866,7 @@ export class FactoryDecisionDispatcher {
       }
       const failureCode = factoryDispatchFailureCode(error);
       const quotaPaused = failureCode === 'run_quota_exhausted';
-      const terminal = !quotaPaused && isTerminalFailure(record.attempts, failureCode);
+      const terminal = !quotaPaused && isTerminalFailure(record.attempts - record.quotaPauses, failureCode);
       const failed = await this.#storage.failDeferredDecision({
         ...leaseIdentity(record, this.#ownerId),
         now: new Date(),
@@ -1897,7 +1897,8 @@ export class FactoryDecisionDispatcher {
         lastError: sanitizeDispatchError(error),
         failureCode,
         quotaPaused: failureCode === 'run_quota_exhausted',
-        terminal: failureCode !== 'run_quota_exhausted' && isTerminalFailure(record.attempts, failureCode),
+        terminal:
+          failureCode !== 'run_quota_exhausted' && isTerminalFailure(record.attempts - record.quotaPauses, failureCode),
       });
     }
   }

@@ -6702,6 +6702,57 @@ describe('a skill run that ends in error (#27740)', () => {
     await resumed.stop();
   });
 
+  it('keeps genuine engineering failures counted across a quota pause', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      skillName: 'understand-issue',
+      idempotencyKey: 'quota-does-not-reset-failure-budget',
+    });
+    await bindWorkRun(storage, item.id);
+    const t0 = Date.parse('2030-01-01T00:00:00Z');
+    const runWith = async (error: Error, at: Date, ownerId: string) => {
+      const session = createSession(undefined, { agentEndReason: 'error', runError: error });
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: session.controller as never,
+        transitionService,
+        storage,
+        ownerId,
+        isAutoRunEnabled: async () => true,
+        staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+      });
+      await dispatcher.runOnce(at);
+      await dispatcher.stop();
+    };
+    await runWith(new Error('ordinary evaluation failure'), new Date(t0), 'engineering-first');
+    expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({
+      status: 'retry',
+      attempts: 1,
+      quotaPauses: 0,
+    });
+    await runWith(
+      Object.assign(new Error('Quota exhausted'), { statusCode: 402 }),
+      new Date(t0 + 120_000),
+      'quota-interruption',
+    );
+    let [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(state).toMatchObject({ status: 'quota_paused', attempts: 2, quotaPauses: 1 });
+    for (let engineeringAttempt = 2; engineeringAttempt <= 5; engineeringAttempt++) {
+      await runWith(
+        new Error('ordinary evaluation failure'),
+        new Date(state!.availableAt.getTime() + 120_000),
+        'engineering-resume-' + engineeringAttempt,
+      );
+      [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+      expect(state).toMatchObject({
+        attempts: engineeringAttempt + 1,
+        quotaPauses: 1,
+        status: engineeringAttempt === 5 ? 'failed' : 'retry',
+      });
+    }
+  });
+
   it('never treats generic HTTP 429 as exhausted quota and bounds unknown-reset wakeups', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const { item, transitionService } = await queueDecision(storage, {
@@ -6735,7 +6786,7 @@ describe('a skill run that ends in error (#27740)', () => {
         status: 'quota_paused',
         quotaPauses: pause,
         failureCode: 'run_quota_exhausted',
-        attempts: 1,
+        attempts: pause,
       });
       const delay = current!.availableAt.getTime() - runAt.getTime();
       const nominal = pause === 1 ? 5 : pause === 2 ? 15 : 30;

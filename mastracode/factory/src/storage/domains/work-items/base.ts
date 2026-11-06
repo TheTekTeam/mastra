@@ -1490,8 +1490,9 @@ export class WorkItemsStorage extends FactoryStorageDomain {
               didClaim = true;
               return {
                 status: 'leased',
-                // Quota probes must not consume the normal five-attempt engineering failure budget.
-                attempts: current.status === 'quota_paused' ? 1 : Number(current.attempts) + 1,
+                // Monotonic total attempts retain lease/restart history. The dispatcher
+                // subtracts quota pauses when enforcing the engineering failure budget.
+                attempts: Number(current.attempts) + 1,
                 lease_owner: input.ownerId,
                 lease_expires_at: input.leaseExpiresAt,
                 // A new attempt starts clean: the previous attempt's cause no longer describes this one.
@@ -2290,7 +2291,14 @@ export class WorkItemsStorage extends FactoryStorageDomain {
       const effect = effects[0]!;
       const effectActor = effect.actor as Record<string, unknown> | null;
       const statuses: readonly string[] = [
-        'pending', 'proposed', 'dismissed', 'superseded', 'leased', 'retry', 'succeeded', 'failed',
+        'pending',
+        'proposed',
+        'dismissed',
+        'superseded',
+        'leased',
+        'retry',
+        'succeeded',
+        'failed',
       ];
       const effectDecision = effect.decision;
       if (
