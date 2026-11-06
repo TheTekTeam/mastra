@@ -31,6 +31,8 @@ import { getPgKnowledgeIsolationKey, KnowledgePG } from './domains/knowledge';
 import { MCPClientsPG } from './domains/mcp-clients';
 import { MCPServersPG } from './domains/mcp-servers';
 import { MemoryPG } from './domains/memory';
+import { PG_THREAD_PERSISTENCE_GUARD_VERSION } from './domains/memory/thread-persistence-guard';
+import type { PgThreadPersistenceGuardCapability } from './domains/memory/thread-persistence-guard';
 import { NotificationsPG } from './domains/notifications';
 import { ObservabilityPG } from './domains/observability';
 import { ObservabilityStoragePostgresVNext } from './domains/observability/v-next';
@@ -173,6 +175,8 @@ export { PoolAdapter } from './client';
 export type { DbClient, TxClient, QueryValues, Pool, PoolClient, QueryResult } from './client';
 export type { PgDomainConfig, PgDomainClientConfig, PgDomainPoolConfig, PgDomainRestConfig } from './db';
 export { PgFactoryStorage, type PgFactoryStorageConfig } from './factory-storage';
+export { PG_THREAD_PERSISTENCE_GUARD_VERSION } from './domains/memory/thread-persistence-guard';
+export type { PgThreadPersistenceGuardV1, PgThreadPersistenceMutation, PgThreadPersistenceGuardCapability } from './domains/memory/thread-persistence-guard';
 
 /**
  * PostgreSQL storage adapter for Mastra.
@@ -214,9 +218,17 @@ export class PostgresStore extends MastraCompositeStore {
 
   stores: StorageDomains;
 
+  /** Adoption callers must inspect the installed guard on the actual memory domain. */
+  getThreadPersistenceGuardCapability(): PgThreadPersistenceGuardCapability {
+    return (this.stores.memory as MemoryPG).getThreadPersistenceGuardCapability();
+  }
+
   constructor(config: PostgresStoreConfig) {
     try {
       validateConfig('PostgresStore', config);
+      if (config.threadPersistenceGuard && config.threadPersistenceGuard.version !== PG_THREAD_PERSISTENCE_GUARD_VERSION) {
+        throw new Error('Unsupported PostgreSQL thread persistence guard version');
+      }
       super({ id: config.id, name: 'PostgresStore', disableInit: config.disableInit, retention: config.retention });
       // Validate schema name to prevent SQL injection
       this.schema = parseSchemaName(config.schemaName || 'public');
@@ -250,7 +262,7 @@ export class PostgresStore extends MastraCompositeStore {
         scores: new ScoresPG(domainConfig),
         workflows: new WorkflowsPG(domainConfig),
         workflowDefinitions: new WorkflowDefinitionsPG(domainConfig),
-        memory: new MemoryPG(domainConfig),
+        memory: new MemoryPG(domainConfig, config.threadPersistenceGuard),
         knowledge: new KnowledgePG({
           ...domainConfig,
           storageIsolationKey: config.storageIsolationKey ?? getPgKnowledgeIsolationKey(config),
