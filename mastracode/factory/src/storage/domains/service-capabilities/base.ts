@@ -219,6 +219,59 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     ]);
   }
 
+  /**
+   * One durable admission boundary. A revocation and an admission serialize on
+   * the same Factory database; a revoked token can never receive a *new*
+   * admission. Already-admitted in-flight effects require outcome reconciliation.
+   */
+  async admitAndRecord(input: {
+    tokenHash: string | null;
+    expectedGrantId: string | null;
+    action: ServiceCapabilityAction;
+    projectId: string;
+    workItemId: string | null;
+    projectAllowed: boolean;
+    requestId: string;
+    bodyFingerprint: string;
+    now: Date;
+  }): Promise<ServiceCapabilityGrant | null> {
+    return this.storage.withTransaction(async ops => {
+      const row = input.tokenHash && input.expectedGrantId
+        ? await ops.findOne<GrantDbRow>('service_capability_grants', {
+            token_hash: input.tokenHash,
+            id: input.expectedGrantId,
+          })
+        : null;
+      const projectExists = row && input.projectAllowed && row.project_id === input.projectId
+        ? Boolean(await ops.findOne('factory_projects', { org_id: row.org_id, id: row.project_id }))
+        : false;
+      const allowed = Boolean(
+        row &&
+        projectExists &&
+        row.revoked_at === null &&
+        row.expires_at.getTime() > input.now.getTime() &&
+        row.actions.includes(input.action) &&
+        (input.action !== 'workItem.enqueue' ||
+          (Boolean(input.workItemId) && row.work_item_ids.includes(input.workItemId!))),
+      );
+      await this.#recordWithin(ops, {
+        grantId: row?.id ?? null,
+        orgId: row?.org_id ?? null,
+        projectId: row?.project_id ?? null,
+        workItemId: input.workItemId,
+        principalId: row?.principal_id ?? null,
+        actorId: row?.principal_id ?? null,
+        action: input.action,
+        requestId: input.requestId,
+        bodyFingerprint: input.bodyFingerprint,
+        outcome: allowed ? 'admitted' : 'denied',
+        reason: allowed ? null : 'invalid_or_out_of_scope',
+        occurredAt: input.now,
+      });
+      return allowed && row ? toGrant(row) : null;
+    });
+  }
+
   /** The caller supplies only a keyed digest, never a raw token. */
   async grantByTokenHash(tokenHash: string): Promise<ServiceCapabilityGrant | null> {
     const row = await this.ops.findOne<GrantDbRow>('service_capability_grants', { token_hash: tokenHash });
