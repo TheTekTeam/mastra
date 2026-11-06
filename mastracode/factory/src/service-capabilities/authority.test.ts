@@ -128,7 +128,7 @@ describe('native service capability grant authority', () => {
     expect(audit.map(event => event.outcome)).toEqual(expect.arrayContaining(['admitted', 'succeeded', 'denied']));
     expect(JSON.stringify(audit)).not.toContain(issued.token);
 
-    const mock = vi.spyOn(seed.serviceCapabilities, 'recordAudit').mockRejectedValueOnce(new Error('DB audit failed'));
+    const mock = vi.spyOn(seed.serviceCapabilities, 'admitAndRecord').mockRejectedValueOnce(new Error('DB audit failed'));
     await expect(authority.admit(input)).rejects.toThrow('DB audit failed');
     mock.mockRestore();
   });
@@ -188,6 +188,52 @@ describe('native service capability grant authority', () => {
       await second?.storage.close();
       await rm(folder, { recursive: true, force: true });
     }
+  });
+
+  it('atomically fences admissions after revocation while retaining already-issued in-flight evidence', async () => {
+    const { seed, project, authority } = await scenario();
+    const now = new Date('2030-01-01T00:00:00Z');
+    const consentToken = await authority.beginConsent({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      intent: ISSUE_AUTOMATION, now,
+    });
+    const issued = await authority.issueGrant({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      consentToken, intent: ISSUE_AUTOMATION, now,
+    });
+    if (issued.status !== 'issued') throw new Error('Expected grant');
+    const mutation = {
+      authorization: 'FactoryService ' + issued.token,
+      action: 'projectAutomation.set' as const,
+      projectId: project.id,
+      requestId: 'abcdef01-1234-4234-8234-123456789012',
+      bodyFingerprint: 'b'.repeat(64),
+      now: new Date(now.getTime() + 1_000),
+    };
+    const beforeRevoke = await authority.admit(mutation);
+    if (beforeRevoke.status !== 'admitted') throw new Error('Expected atomic pre-revoke admission');
+    const revokeIntent = { operation: 'revoke' as const, targetGrantId: issued.grant.id };
+    const revokeConsent = await authority.beginConsent({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      intent: revokeIntent, now: new Date(now.getTime() + 1_001),
+    });
+    expect(await authority.revokeGrant({
+      orgId: 'verified-org', projectId: project.id, userId: 'gp-admin',
+      consentToken: revokeConsent, intent: revokeIntent, now: new Date(now.getTime() + 1_002),
+    })).toBe('revoked');
+    // A revocation fences new admissions; it cannot cancel an already
+    // admitted in-flight effect. It must be explicitly finalized/reconciled.
+    expect(await authority.admit({ ...mutation, now: new Date(now.getTime() + 1_003) }))
+      .toEqual({ status: 'denied' });
+    const journalBeforeOutcome = await seed.serviceCapabilities.listAudit({
+      orgId: 'verified-org', projectId: project.id,
+    });
+    expect(journalBeforeOutcome.some(e => e.requestId === mutation.requestId && e.outcome === 'admitted')).toBe(true);
+    await authority.finish(beforeRevoke.admission, 'effect_unverified', 'revoked_while_in_flight');
+    const journal = await seed.serviceCapabilities.listAudit({ orgId: 'verified-org', projectId: project.id });
+    expect(journal.some(e => e.requestId === mutation.requestId && e.outcome === 'denied')).toBe(true);
+    expect(journal.some(e => e.requestId === mutation.requestId && e.outcome === 'effect_unverified')).toBe(true);
+    expect(JSON.stringify(journal)).not.toContain(issued.token);
   });
 
   it('does not permit cross-tenant or widened issuance intent, wrong issuer, weak key or HTTP origin', async () => {
