@@ -15,8 +15,8 @@ import type { Context } from 'hono';
 import type { GithubIntegration } from '../integrations/github/integration.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
-import type { RouteAuth } from './route.js';
 import { FACTORY_ROUTE_CONTRACTS } from './contracts.js';
+import type { RouteAuth } from './route.js';
 
 const path = FACTORY_ROUTE_CONTRACTS.projectAppEvidenceGet.path;
 const ttlMs = 90_000;
