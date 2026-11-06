@@ -44,8 +44,11 @@ export interface FactoryStorageTestSeed {
  * registered. Call per test (state is per-instance). The backend closes
  * automatically when the current test finishes.
  */
-export async function createFactoryStorageForTests(): Promise<FactoryStorageTestSeed> {
-  const storage = new LibSQLFactoryStorage({ id: 'factory-test', url: ':memory:' });
+export async function createFactoryStorageForTests({
+  url = ':memory:',
+  closeOnTestFinished = true,
+}: { url?: string; closeOnTestFinished?: boolean } = {}): Promise<FactoryStorageTestSeed> {
+  const storage = new LibSQLFactoryStorage({ id: 'factory-test', url });
   const intake = storage.registerDomain(new IntakeStorage());
   const audit = storage.registerDomain(new AuditStorage());
   const workItems = storage.registerDomain(new WorkItemsStorage());
@@ -62,7 +65,7 @@ export async function createFactoryStorageForTests(): Promise<FactoryStorageTest
   const channelIdentity = storage.registerDomain(new ChannelIdentityStorage());
   const comments = storage.registerDomain(new WorkItemCommentsStorage());
   await storage.init();
-  onTestFinished(() => storage.close());
+  if (closeOnTestFinished) onTestFinished(() => storage.close());
   return {
     storage,
     intake,
