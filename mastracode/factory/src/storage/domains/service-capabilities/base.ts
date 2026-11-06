@@ -108,6 +108,9 @@ export const SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA: CollectionSchema = {
     action: { type: 'text' },
     request_id: { type: 'text' },
     body_fingerprint: { type: 'text' },
+    role: { type: 'text', nullable: true },
+    skill_name: { type: 'text', nullable: true },
+    arguments_digest: { type: 'text', nullable: true },
     admitted_at: { type: 'timestamp' },
     start_by: { type: 'timestamp' },
     started_at: { type: 'timestamp', nullable: true },
@@ -216,6 +219,9 @@ interface LeaseDbRow extends Record<string, unknown> {
   action: ServiceCapabilityAction;
   request_id: string;
   body_fingerprint: string;
+  role: string | null;
+  skill_name: string | null;
+  arguments_digest: string | null;
   admitted_at: Date;
   start_by: Date;
   started_at: Date | null;
@@ -404,6 +410,9 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
             action: input.action,
             request_id: input.requestId,
             body_fingerprint: input.bodyFingerprint,
+            role: input.role ?? null,
+            skill_name: input.skillName ?? null,
+            arguments_digest: input.argumentsDigest ?? null,
             admitted_at: admissionNow,
             start_by: new Date(admissionNow.getTime() + 15_000),
             started_at: null,
@@ -441,6 +450,9 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     action: ServiceCapabilityAction;
     requestId: string;
     bodyFingerprint: string;
+    role?: string;
+    skillName?: string;
+    argumentsDigest?: string;
     now?: Date;
   }): Promise<boolean> {
     return this.storage.withTransaction(async ops => {
@@ -450,14 +462,23 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         org_id: input.orgId, project_id: input.projectId, action: input.action,
         request_id: input.requestId, body_fingerprint: input.bodyFingerprint,
       });
-      if (!lease || lease.started_at || lease.settled_at || lease.start_by.getTime() <= now.getTime()) return false;
+      if (!lease || lease.started_at || lease.settled_at || lease.start_by.getTime() <= now.getTime() ||
+          lease.role !== (input.role ?? null) ||
+          lease.skill_name !== (input.skillName ?? null) ||
+          lease.arguments_digest !== (input.argumentsDigest ?? null)) return false;
       const grant = await ops.findOne<GrantDbRow>('service_capability_grants', {
         id: input.grantId, org_id: input.orgId, project_id: input.projectId,
       });
       if (!grant || grant.version !== input.grantVersion ||
           grant.revoked_at || grant.issued_at.getTime() > now.getTime() ||
           lease.admitted_at.getTime() > now.getTime() ||
-          grant.expires_at.getTime() <= now.getTime()) return false;
+          grant.expires_at.getTime() <= now.getTime() ||
+          (lease.action === 'workItem.enqueue' &&
+           !grant.enqueue_profiles.some(profile =>
+             profile.workItemId === lease.work_item_id &&
+             profile.role === lease.role &&
+             profile.skillName === lease.skill_name &&
+             profile.argumentsDigest === lease.arguments_digest))) return false;
       const handover = await ops.findOne<HandoverDbRow>('service_capability_handover_leases', {
         org_id: input.orgId, project_id: input.projectId,
       });
