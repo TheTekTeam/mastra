@@ -115,40 +115,29 @@ class ControlledLeasePubSub extends PubSub implements LeaseProvider {
 }
 
 describe('registerRun thread lease', () => {
-  it('rejects idle wake on lease backend failure without starting an unowned run', async () => {
+  it('preserves legacy unmanaged wake availability on pubsub failure while managed ingress stays deny-only', async () => {
     const runtime = new AgentThreadStreamRuntime();
     const pubsub = new ControlledLeasePubSub();
     pubsub.failAcquire = true;
-    const agent = { id: 'failed-lease-wake', stream: vi.fn() } as unknown as Agent<any, any, any, any>;
-    const threadId = 'failed-lease-thread';
-    const resourceId = 'failed-lease-user';
-
-    const signal = runtime.sendSignal(
-      agent,
-      createSignal({ type: 'user-message', contents: 'retry when the backend recovers' }),
-      { resourceId, threadId, ifIdle: { streamOptions: { memory: { thread: threadId, resource: resourceId } } } },
-      pubsub,
-    );
-    await expect(signal.accepted).rejects.toThrow('acquire failed');
-    expect(agent.stream).not.toHaveBeenCalled();
-    expect(pubsub.publishedTypes).not.toContain('run-registered');
-    expect(pubsub.owners).toHaveProperty('size', 0);
-    expect(runtime.getThreadState({ threadId, resourceId }, pubsub)).toBe('idle');
-
-    // A recovered backend with a different live owner must never reactivate
-    // the rejected local reservation or its provider execution.
-    const key = [resourceId, threadId].join(AGENT_THREAD_KEY_SEPARATOR);
-    pubsub.failAcquire = false;
-    pubsub.owners.set(key, 'healthy-remote-owner');
-    const retry = runtime.sendSignal(
-      agent,
-      createSignal({ type: 'user-message', contents: 'retry after backend recovery' }),
-      { resourceId, threadId },
-      pubsub,
-    );
-    await expect(retry.accepted).resolves.toMatchObject({ action: 'deliver', runId: 'healthy-remote-owner' });
-    expect(agent.stream).not.toHaveBeenCalled();
-    expect(pubsub.owners.get(key)).toBe('healthy-remote-owner');
+    const agent = {
+      id: 'legacy-optimistic-wake',
+      stream: vi.fn(async () => ({ runId: 'legacy-wake', fullStream: new ReadableStream() })),
+    } as unknown as Agent<any, any, any, any>;
+    const threadId = 'legacy-wake-thread';
+    const resourceId = 'legacy-wake-user';
+    try {
+      const signal = runtime.sendSignal(
+        agent,
+        createSignal({ type: 'user-message', contents: 'legacy availability' }),
+        { resourceId, threadId },
+        pubsub,
+      );
+      await expect(signal.accepted).resolves.toMatchObject({ action: 'wake' });
+      expect(agent.stream).toHaveBeenCalledTimes(1);
+      expect(pubsub.owners.size).toBe(0);
+    } finally {
+      runtime.resetForTests();
+    }
   });
 
   it('acquires the thread lease for a plain thread-bound run and releases it on completion', async () => {

@@ -26,15 +26,14 @@ at zero.
 
 ## Critical remaining blockers
 
-- **Residual non-strict registration lease fail-open:** the idle `sendSignal`
-  wake path now rejects lease backend failure and releases its reservation
-  instead of claiming success; it is regression-tested with a recovered remote
-  owner. However, direct non-strict `registerRun` still treats a thrown lease
-  acquisition as acquired after provider work may already have started. That
-  route now has a future enforce-mode synchronous denial before local
-  registration, but remains unsupported for positive selected-project adoption.
-  PM-owned projects require B1 transactional PG epoch/reservation and trusted run/thread/project
-  binding at _every effect_, not an optimistic pubsub lease.
+- **Unmanaged legacy lease fail-open:** idle `sendSignal` and non-strict
+  `registerRun` retain their historical optimistic behavior under pubsub lease
+  failure (availability over duplicate-run risk). Changing that globally would
+  break existing clients; the legacy behavior has an explicit regression test.
+  Both entry points have a future enforce-mode synchronous denial before local
+  mutation, but neither is a positive selected-project admission path. PM-owned
+  projects require B1 transactional PG epoch/reservation and trusted
+  run/thread/project binding at _every effect_, never this optimistic lease.
 - **No positive synchronous queue/clone proof:** these routes are intentionally
   denied in hypothetical enforce mode. To support selected-project handover,
   move their admission to a transaction-capable async ingress or require a

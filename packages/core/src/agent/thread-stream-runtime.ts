@@ -7397,17 +7397,16 @@ export class AgentThreadStreamRuntime {
         throw error;
       }
 
-      // A lost lease acknowledgement is NOT proof of ownership. If the pubsub
-      // backend cannot answer, keep the signal retryable and do not start an
-      // unowned competing model run or falsely acknowledge delivery.
-      let acquiredLease: { acquired: boolean; owner?: string };
-      try {
-        acquiredLease = await leaseProvider.acquireLease(reservedKey, reservedRunId, AGENT_THREAD_LEASE_TTL_MS);
-      } catch (error) {
-        this.releaseThreadRunReservation(reservedRunId, resolvedPubSub);
-        throw error;
-      }
-      const lease = await this.#waitForRetakeOwner(leaseProvider, reservedKey, acquiredLease);
+      // Legacy unmanaged behavior intentionally favors availability on pubsub
+      // failure. This is NOT authoritative ownership: future managed mode is
+      // denied synchronously at #sendSignal ingress, before this optimistic path.
+      const lease = await this.#waitForRetakeOwner(
+        leaseProvider,
+        reservedKey,
+        await leaseProvider
+          .acquireLease(reservedKey, reservedRunId, AGENT_THREAD_LEASE_TTL_MS)
+          .catch(() => ({ acquired: true as boolean, owner: reservedRunId as string | undefined })),
+      );
 
       if (!lease.acquired) {
         // Lost the wake race to another process. Roll back our optimistic local reservation
