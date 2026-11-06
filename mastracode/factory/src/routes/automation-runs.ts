@@ -229,6 +229,11 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
                 workItemId: parsedPath.data.workItemId,
                 requestId: request.requestId,
                 bodyFingerprint: createHash('sha256').update(JSON.stringify(request)).digest('hex'),
+                role: request.role,
+                skillName: request.skillName,
+                argumentsDigest: createHash('sha256')
+                  .update(JSON.stringify([request.arguments !== undefined, request.arguments ?? null]))
+                  .digest('hex'),
               });
               if (admitted.status !== 'admitted') return c.json({ error: 'service_capability_denied' }, 403);
               serviceAdmission = admitted.admission;
@@ -275,6 +280,19 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             ...(request.arguments !== undefined ? { arguments: request.arguments } : {}),
           };
 
+          if (serviceAdmission && capabilities) {
+            try {
+              const started = await capabilities.beginEffect(serviceAdmission);
+              if (!started) {
+                if (!(await finishService('rejected', 'revoked_or_lease_expired_before_native_start'))) {
+                  return serviceOutcomeUnavailable();
+                }
+                return c.json({ error: 'service_capability_revoked_or_expired' }, 403);
+              }
+            } catch {
+              return serviceOutcomeUnavailable();
+            }
+          }
           const now = new Date();
           let commit: Awaited<ReturnType<WorkItemsStorage['commitRuleEvaluation']>>;
           try {
