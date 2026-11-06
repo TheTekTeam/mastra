@@ -477,12 +477,21 @@ function retryAt(now: Date, attempts: number): Date {
 // absent that evidence, re-probe at bounded 5/15/30-minute intervals. The
 // deterministic spread avoids synchronising many exhausted accounts on restart.
 const QUOTA_CHECK_DELAYS_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000] as const;
+function quotaRetryAfterHeader(headers: Record<string, unknown> | undefined): unknown {
+  if (!headers || typeof headers !== 'object') return undefined;
+  return Object.entries(headers).find(([name]) => name.toLowerCase() === 'retry-after')?.[1];
+}
 function quotaRetryAfterMs(error: unknown, now: Date): number | null {
   let value: unknown;
   let cursor = error;
   for (let depth = 0; depth < 4 && cursor && typeof cursor === 'object'; depth++) {
-    const shape = cursor as { retryAfter?: unknown; headers?: Record<string, unknown>; cause?: unknown };
-    value = shape.retryAfter ?? shape.headers?.['retry-after'] ?? shape.headers?.['Retry-After'];
+    const shape = cursor as {
+      retryAfter?: unknown;
+      responseHeaders?: Record<string, unknown>;
+      headers?: Record<string, unknown>;
+      cause?: unknown;
+    };
+    value = shape.retryAfter ?? quotaRetryAfterHeader(shape.responseHeaders) ?? quotaRetryAfterHeader(shape.headers);
     if (value !== undefined) break;
     cursor = shape.cause;
   }
@@ -866,11 +875,14 @@ export class FactoryDecisionDispatcher {
       }
       const failureCode = factoryDispatchFailureCode(error);
       const quotaPaused = failureCode === 'run_quota_exhausted';
+      // Run completion may outlast its original claim; never schedule from claim time.
+      // The lower bound also tolerates a backwards wall-clock adjustment.
+      const failedAt = new Date(Math.max(Date.now(), now.getTime()));
       const terminal = !quotaPaused && isTerminalFailure(record.attempts - record.quotaPauses, failureCode);
       const failed = await this.#storage.failDeferredDecision({
         ...leaseIdentity(record, this.#ownerId),
-        now: new Date(),
-        availableAt: quotaPaused ? quotaWakeAt(now, record, error) : retryAt(now, record.attempts),
+        now: failedAt,
+        availableAt: quotaPaused ? quotaWakeAt(failedAt, record, error) : retryAt(failedAt, record.attempts),
         lastError: sanitizeDispatchError(error),
         failureCode,
         terminal,
@@ -1889,11 +1901,15 @@ export class FactoryDecisionDispatcher {
       if (!completed) throw new Error('Factory kickoff lease was lost before completion.');
     } catch (error) {
       const failureCode = factoryDispatchFailureCode(error);
+      // Start relative provider deadlines at the observed failed run end.
+      const failedAt = new Date(Math.max(Date.now(), now.getTime()));
       await this.#storage.failPendingStart({
         ...leaseIdentity(record, this.#ownerId),
-        now: new Date(),
+        now: failedAt,
         availableAt:
-          failureCode === 'run_quota_exhausted' ? quotaWakeAt(now, record, error) : retryAt(now, record.attempts),
+          failureCode === 'run_quota_exhausted'
+            ? quotaWakeAt(failedAt, record, error)
+            : retryAt(failedAt, record.attempts),
         lastError: sanitizeDispatchError(error),
         failureCode,
         quotaPaused: failureCode === 'run_quota_exhausted',

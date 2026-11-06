@@ -56,6 +56,8 @@ function createSession(
     surfaceQueuedSignalOnRunEnd?: boolean;
     /** Runs just before the busy run ends, e.g. to move the card on mid-run. */
     beforeRunEnd?: () => Promise<void>;
+    /** Allows deterministic run-end time observation without replacing native signal semantics. */
+    beforeAgentEnd?: () => void;
     initialDeliveredSignalIds?: string[];
     /**
      * Per-call notification outcomes. `deliver` models a kickoff queued onto a
@@ -215,7 +217,10 @@ function createSession(
       } else if (!options?.signalAccepted && !options?.dropDeliveredSignal) {
         // Default landed-deliver path: the in-flight run drains the prompt and
         // finishes, which is what the dispatcher now waits to observe.
-        queueMicrotask(() => emitAgentEnd(options?.agentEndReason ?? 'complete'));
+        queueMicrotask(() => {
+          options?.beforeAgentEnd?.();
+          emitAgentEnd(options?.agentEndReason ?? 'complete');
+        });
       }
       if (redelivered) return { accepted: Promise.resolve({ accepted: true as const, action: 'wake' }) };
       return { accepted: options?.signalAccepted ?? Promise.resolve({ accepted: true, action: 'deliver' }) };
@@ -5794,6 +5799,41 @@ describe('FactoryDecisionDispatcher', () => {
     });
   });
 
+  it('anchors pending-start provider quota wake to a delayed run failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const claimAt = new Date('2030-01-01T00:00:00Z');
+      vi.setSystemTime(claimAt);
+      const storage = (await createFactoryStorageForTests()).workItems;
+      const { transitionService } = await preparePromptKickoff(storage);
+      const providerError = Object.assign(new Error('Pending kickoff quota exhausted'), {
+        statusCode: 402,
+        responseHeaders: { 'retry-after': '300' },
+      });
+      const session = createSession(undefined, { agentEndReason: 'error', runError: providerError });
+      session.consumeStream.mockImplementation(async () => {
+        vi.setSystemTime(new Date(claimAt.getTime() + 10 * 60_000));
+        session.emitAgentEnd('error');
+      });
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: session.controller as never,
+        transitionService,
+        storage,
+        ownerId: 'pending-delayed-worker',
+        isAutoRunEnabled: async () => true,
+      });
+      await dispatcher.runOnce(claimAt);
+      expect((await storage.listPendingStarts('org-1', PROJECT_ID))[0]).toMatchObject({
+        status: 'quota_paused',
+        quotaPauses: 1,
+        availableAt: new Date('2030-01-01T00:15:00Z'),
+      });
+      await dispatcher.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('dispatches a pending start on the first tick even when the deferred-decision queue exceeds the batch size', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     // Deeper than one tick's claim limit: without starts-first claiming these
@@ -6656,7 +6696,7 @@ describe('a skill run that ends in error (#27740)', () => {
     await bindWorkRun(storage, item.id);
     const quotaError = Object.assign(new Error('Provider quota exhausted'), {
       statusCode: 402,
-      headers: { 'retry-after': '7200' },
+      responseHeaders: { 'retry-after': '7200' },
     });
     const exhausted = createSession(undefined, { agentEndReason: 'error', runError: quotaError });
     const first = new FactoryDecisionDispatcher({
@@ -6702,6 +6742,48 @@ describe('a skill run that ends in error (#27740)', () => {
     await resumed.stop();
   });
 
+  it('uses provider responseHeaders and the observed run-error time after a delayed quota failure', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const claimAt = new Date('2030-01-01T00:00:00Z');
+      vi.setSystemTime(claimAt);
+      const storage = (await createFactoryStorageForTests()).workItems;
+      const { item, transitionService } = await queueDecision(storage, {
+        type: 'invokeSkill',
+        role: 'work',
+        skillName: 'understand-issue',
+        idempotencyKey: 'skill-provider-delayed-quota',
+      });
+      await bindWorkRun(storage, item.id);
+      const providerError = Object.assign(new Error('Quota exhausted after a long run'), {
+        statusCode: 402,
+        responseHeaders: { 'Retry-After': '300' },
+      });
+      const session = createSession(undefined, {
+        agentEndReason: 'error',
+        runError: providerError,
+        beforeAgentEnd: () => vi.setSystemTime(new Date(claimAt.getTime() + 10 * 60_000)),
+      });
+      const dispatcher = new FactoryDecisionDispatcher({
+        controller: session.controller as never,
+        transitionService,
+        storage,
+        ownerId: 'provider-delayed-worker',
+        isAutoRunEnabled: async () => true,
+        staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+      });
+      await dispatcher.runOnce(claimAt);
+      expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({
+        status: 'quota_paused',
+        quotaPauses: 1,
+        availableAt: new Date('2030-01-01T00:15:00Z'),
+      });
+      await dispatcher.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps genuine engineering failures counted across a quota pause', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const { item, transitionService } = await queueDecision(storage, {
@@ -6738,6 +6820,15 @@ describe('a skill run that ends in error (#27740)', () => {
     );
     let [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
     expect(state).toMatchObject({ status: 'quota_paused', attempts: 2, quotaPauses: 1 });
+    for (let pause = 2; pause <= 7; pause++) {
+      await runWith(
+        Object.assign(new Error('Quota exhausted'), { statusCode: 402 }),
+        new Date(state!.availableAt.getTime() + 120_000),
+        'quota-interruption-' + pause,
+      );
+      [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+      expect(state).toMatchObject({ status: 'quota_paused', attempts: pause + 1, quotaPauses: pause });
+    }
     for (let engineeringAttempt = 2; engineeringAttempt <= 5; engineeringAttempt++) {
       await runWith(
         new Error('ordinary evaluation failure'),
@@ -6746,10 +6837,28 @@ describe('a skill run that ends in error (#27740)', () => {
       );
       [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
       expect(state).toMatchObject({
-        attempts: engineeringAttempt + 1,
-        quotaPauses: 1,
+        attempts: engineeringAttempt + 7,
+        quotaPauses: 7,
         status: engineeringAttempt === 5 ? 'failed' : 'retry',
       });
+    }
+    // A human retry starts a new engineering budget; old quota waits must not
+    // be subtracted from the new counter and grant extra retries.
+    const manuallyRetried = await storage.retryDeferredDecision(
+      'org-1',
+      PROJECT_ID,
+      state!.id,
+      new Date(state!.availableAt.getTime() + 120_000),
+    );
+    expect(manuallyRetried).toMatchObject({ status: 'retry', attempts: 0, quotaPauses: 0 });
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await runWith(
+        new Error('new epoch engineering failure'),
+        new Date((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]!.availableAt.getTime() + 120_000),
+        'manual-retry-' + attempt,
+      );
+      [state] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+      expect(state).toMatchObject({ attempts: attempt, quotaPauses: 0, status: attempt === 5 ? 'failed' : 'retry' });
     }
   });
 

@@ -1991,6 +1991,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
                   ? {
                       status: 'retry',
                       attempts: 0,
+                      quota_pauses: 0,
                       available_at: input.now,
                       lease_owner: null,
                       lease_expires_at: null,
@@ -2661,6 +2662,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           status: 'proposed',
           // The claim that parked it spent no effect, so it costs no attempt.
           attempts: 0,
+          quota_pauses: 0,
           lease_owner: null,
           lease_expires_at: null,
           updated_at: now,
@@ -2697,6 +2699,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           return {
             status: 'pending',
             attempts: 0,
+            quota_pauses: 0,
             available_at: now,
             approved_at: now,
             approved_by: approvedBy ?? null,
@@ -2924,6 +2927,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           return {
             status: 'retry',
             attempts: 0,
+            quota_pauses: 0,
             delivery_generation: Number(current.delivery_generation ?? 0) + 1,
             available_at: now,
             lease_owner: null,
