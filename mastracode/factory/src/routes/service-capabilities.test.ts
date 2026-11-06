@@ -70,7 +70,14 @@ async function scenario() {
   const intent = {
     operation: 'issue' as const,
     actions: ['workItem.enqueue', 'projectAutomation.set'] as const,
-    workItemIds: [item.id], ttlSeconds: 3600,
+    workItemIds: [item.id],
+    enqueueProfiles: [{
+      workItemId: item.id,
+      role: 'work',
+      skillName: 'factory-plan',
+      argumentsDigest: createHash('sha256').update(JSON.stringify([false, null])).digest('hex'),
+    }],
+    ttlSeconds: 3600,
   };
   async function request(
     path: string,
@@ -195,6 +202,11 @@ describe('explicit Factory service grants: human administration and native mutat
       authorization: 'FactoryService malformed',
     }, null)).status).toBe(403);
     expect((await s.request(wrongItemPath, 'POST', run, authorized, null)).status).toBe(403);
+    expect((await s.request(path, 'POST', { ...run, role: 'admin' }, authorized, null)).status).toBe(403);
+    expect((await s.request(path, 'POST', { ...run, skillName: 'sensitive-skill' },
+      authorized, null)).status).toBe(403);
+    expect((await s.request(path, 'POST', { ...run, arguments: 'unsanctioned' },
+      authorized, null)).status).toBe(403);
     const otherProject = await s.seed.projects.create({
       orgId: 'other-org', userId: 'outsider', input: { name: 'Other tenant' },
     });
@@ -223,7 +235,7 @@ describe('explicit Factory service grants: human administration and native mutat
     expect((await s.request(path, 'POST', run, { authorization }, null)).status).toBe(503);
     expect(await s.seed.workItems.listDeferredDecisions(admin.organizationId, s.project.id)).toHaveLength(0);
     pre.mockRestore();
-    const post = vi.spyOn(s.seed.serviceCapabilities, 'recordAudit')
+    const post = vi.spyOn(s.seed.serviceCapabilities, 'finishEffect')
       .mockRejectedValueOnce(new Error('outcome audit unavailable'));
     const uncertain = await s.request(path, 'POST', run, { authorization }, null);
     expect(uncertain.status).toBe(503);
