@@ -109,6 +109,17 @@ jobs:
         timeout-minutes: 8
         run: pnpm --filter @mastra/factory build:lib
 
+      - name: Verify B2b public declarations exclude dev-only PG package
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          declaration=mastracode/factory/dist/storage/domains/execution-origin/reconcile.d.ts
+          test -s "$declaration"
+          if grep -n -F '@mastra/pg' "$declaration"; then
+            echo '::error::Factory public B2b declarations reference dev-only @mastra/pg'
+            exit 1
+          fi
+
       - name: Verify deterministic generated Factory CLI route metadata
         timeout-minutes: 3
         run: |
@@ -140,6 +151,29 @@ jobs:
           pnpm --filter @mastra/pg exec vitest run \
             src/storage/domains/memory/thread-persistence-guard.test.ts \
             --reporter=verbose --maxWorkers=1
+
+      - name: B1b and B2b real PG18 transactional security regressions (no skips)
+        timeout-minutes: 8
+        env:
+          B1B_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          B1B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+          B2B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$B1B_EXPECTED_HEAD"
+          test -n "$B1B_PG_URL" && test -n "$B2B_PG_URL"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/execution-epochs/settlement.test.ts \
+            src/storage/domains/execution-origin/reconcile.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-b1b-b2b-pg18.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests !== 11 || result.numPassedTests !== 11 ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("B1b/B2b PG18 tests skipped or failed");
+            }
+            console.log("B1b/B2b PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/factory-b1b-b2b-pg18.json"
 
       - name: Factory receipt, skill and dispatcher regressions
         timeout-minutes: 12
