@@ -6,6 +6,8 @@
 import { MockLanguageModelV2 } from '@internal/ai-sdk-v5/test';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { Mastra } from '../../mastra';
+import { InMemoryStore } from '../../storage';
 import { Agent } from '../agent';
 import { createDurableAgent } from '../durable/create-durable-agent';
 import { AgentThreadStreamRuntime } from '../thread-stream-runtime';
@@ -113,11 +115,18 @@ describe('A2 actual early Core ingress denial before local mutation', () => {
     ]);
   });
 
-  it('blocks real DurableAgent single and bulk recovery before reading snapshots or invoking provider', async () => {
+  it('blocks registered DurableAgent single and bulk recovery before reading snapshots or invoking provider', async () => {
     const durable = createDurableAgent({ agent: newAgent() });
+    const storage = new InMemoryStore();
+    const readStore = vi.spyOn(storage, 'getStore');
+    // A fully registered agent has a real storage backend: without the
+    // injected gate, these APIs could discover and mutate durable workflows.
+    void new Mastra({ agents: { 'core-a2-entrypoint-negative': durable as any }, storage });
+    readStore.mockClear();
     denied.recovery = true;
     await expect(durable.recover('missing-durable-run')).rejects.toThrow(/CORE_EFFECT_ADMISSION_DENIED/);
     await expect(durable.recoverActiveRuns()).rejects.toThrow(/CORE_EFFECT_ADMISSION_DENIED/);
+    expect(readStore).not.toHaveBeenCalled();
     expect(providerCalled).not.toHaveBeenCalled();
     expect(denied.boundaries).toEqual(['durable-recovery', 'durable-recovery']);
   });
