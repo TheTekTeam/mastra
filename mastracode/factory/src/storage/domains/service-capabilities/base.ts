@@ -233,9 +233,11 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     projectAllowed: boolean;
     requestId: string;
     bodyFingerprint: string;
-    now: Date;
+    now?: Date;
   }): Promise<ServiceCapabilityGrant | null> {
     return this.storage.withTransaction(async ops => {
+      // Use the transactional admission instant, not a stale preflight time.
+      const admissionNow = input.now ?? new Date();
       const row = input.tokenHash && input.expectedGrantId
         ? await ops.findOne<GrantDbRow>('service_capability_grants', {
             token_hash: input.tokenHash,
@@ -249,7 +251,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         row &&
         projectExists &&
         row.revoked_at === null &&
-        row.expires_at.getTime() > input.now.getTime() &&
+        row.expires_at.getTime() > admissionNow.getTime() &&
         row.actions.includes(input.action) &&
         (input.action !== 'workItem.enqueue' ||
           (Boolean(input.workItemId) && row.work_item_ids.includes(input.workItemId!))),
@@ -266,7 +268,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         bodyFingerprint: input.bodyFingerprint,
         outcome: allowed ? 'admitted' : 'denied',
         reason: allowed ? null : 'invalid_or_out_of_scope',
-        occurredAt: input.now,
+        occurredAt: admissionNow,
       });
       return allowed && row ? toGrant(row) : null;
     });
