@@ -511,9 +511,15 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
       }
       let settled = false;
       await ops.updateAtomic<LeaseDbRow>('service_capability_effect_leases', { id: row.id }, current => {
-        if (current.settled_at) return null;
+        if (current.settled_at || (input.outcome === 'effect_unverified' && current.outcome === 'effect_unverified')) {
+          return null;
+        }
         settled = true;
-        return { settled_at: now, outcome: input.outcome };
+        // Unknown native effect is *not* final settlement: keep it visible in
+        // durable open-lease reconciliation after a crash/restart.
+        return input.outcome === 'effect_unverified'
+          ? { outcome: 'effect_unverified' }
+          : { settled_at: now, outcome: input.outcome };
       });
       if (!settled) throw new Error('Service effect lease settlement lost concurrent race');
       const grant = await ops.findOne<GrantDbRow>('service_capability_grants', {
