@@ -255,46 +255,31 @@ export class ServiceCapabilityAuthority {
   }): Promise<{ status: 'admitted'; admission: ServiceCapabilityAdmission } | { status: 'denied' }> {
     const now = input.now ?? new Date();
     const raw = input.authorization.slice('FactoryService '.length);
-    let grant: ServiceCapabilityGrant | null = null;
+    let hash: string | null = null;
+    let expectedGrantId: string | null = null;
     if (TOKEN_PATTERN.test(raw)) {
-      const hash = this.#hmac('service', raw);
-      grant = await this.#storage.grantByTokenHash(hash);
+      hash = this.#hmac('service', raw);
       const candidate = Buffer.from(hash, 'hex');
+      const grant = await this.#storage.grantByTokenHash(hash);
       const expected = Buffer.from(grant?.tokenHash ?? '0'.repeat(64), 'hex');
-      // Always perform a fixed-length comparison, including unknown token hashes.
-      if (!timingSafeEqual(candidate, expected)) grant = null;
+      // Constant time, including unknown hashes. The transaction below
+      // rechecks revocation, expiry and scope while journaling admission.
+      if (timingSafeEqual(candidate, expected)) expectedGrantId = grant?.id ?? null;
     } else {
-      // Malformed material is not persisted or echoed; equal-length dummy comparison.
       timingSafeEqual(Buffer.alloc(32), Buffer.alloc(32));
     }
-    const allowed =
-      grant !== null &&
-      grant.revokedAt === null &&
-      grant.expiresAt.getTime() > now.getTime() &&
-      this.#policy.allowedProjectIds.has(grant.projectId) &&
-      grant.projectId === input.projectId &&
-      grant.actions.includes(input.action) &&
-      (input.action !== 'workItem.enqueue' ||
-        (Boolean(input.workItemId) && grant.workItemIds.includes(input.workItemId!))) &&
-      Boolean(await this.#projects.get({ orgId: grant.orgId, id: grant.projectId }));
-
-    const audit = {
-      grantId: grant?.id ?? null,
-      orgId: grant?.orgId ?? null,
-      projectId: grant?.projectId ?? null,
-      workItemId: input.workItemId ?? null,
-      principalId: grant?.principalId ?? null,
-      actorId: grant?.principalId ?? null,
+    const grant = await this.#storage.admitAndRecord({
+      tokenHash: hash,
+      expectedGrantId,
       action: input.action,
+      projectId: input.projectId,
+      workItemId: input.workItemId ?? null,
+      projectAllowed: this.#policy.allowedProjectIds.has(input.projectId),
       requestId: input.requestId,
       bodyFingerprint: input.bodyFingerprint,
-      outcome: allowed ? 'admitted' as const : 'denied' as const,
-      reason: allowed ? null : 'invalid_or_out_of_scope',
-      occurredAt: now,
-    };
-    // If admission or denial cannot be durably audited, throws before any native effect.
-    await this.#storage.recordAudit(audit);
-    if (!allowed || !grant) return { status: 'denied' };
+      now,
+    });
+    if (!grant) return { status: 'denied' };
     return {
       status: 'admitted',
       admission: {
