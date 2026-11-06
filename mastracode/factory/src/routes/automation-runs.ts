@@ -22,11 +22,12 @@ import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 
+import type { ServiceCapabilityAdmission, ServiceCapabilityAuthority } from '../service-capabilities/authority.js';
+
 import type { AuditAction } from '../storage/domains/audit/actions.js';
 import type { AuditTarget } from '../storage/domains/audit/base.js';
 import type { AuditEmitter, AuditRecorder } from '../storage/domains/audit/domain.js';
 import { auditRequestContext } from '../storage/domains/audit/domain.js';
-import type { ServiceCapabilityAdmission, ServiceCapabilityAuthority } from '../service-capabilities/authority.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { FACTORY_ROUTE_CONTRACTS } from './contracts.js';
