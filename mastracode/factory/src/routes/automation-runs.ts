@@ -90,7 +90,7 @@ export interface AutomationRunRoutesDeps extends RouteDependencies {
    */
   verifyIssueCompletionEvidence?: (
     receipt: IssueCompletionReceipt,
-    scope: { orgId: string; factoryProjectId: string },
+    scope: { orgId: string; factoryProjectId: string; repositoryId: string },
   ) => Promise<boolean>;
 }
 
@@ -315,6 +315,9 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
       registerApiRoute(completionContract.path, {
         method: completionContract.method,
         handler: async c => {
+          // Final completion evidence is never public, even in deployments
+          // that deliberately allow local unauthenticated project GETs.
+          if (!this.deps.auth.enabled()) return c.json({ error: 'unauthorized' }, 401);
           const context = loose(c);
           const resolved = await this.#resolveProject(context, 'read');
           if ('response' in resolved) return resolved.response;
@@ -340,6 +343,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             if (!(await verify(result.receipt, {
               orgId: resolved.orgId,
               factoryProjectId: resolved.factoryProjectId,
+              repositoryId: result.repositoryId,
             }))) {
               return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
             }

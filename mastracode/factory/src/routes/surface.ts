@@ -11,6 +11,7 @@ import type { BoardRegistry } from '../boards/index.js';
 import type { FactoryIntegration, IntegrationContext, IntegrationHooks } from '../integrations/base.js';
 import { getGithubFeatureDiagnostics } from '../integrations/github/config.js';
 import type { GithubIntegration } from '../integrations/github/integration.js';
+import { createIssueCompletionGithubVerifier } from './issue-completion-verifier.js';
 import { MaterializeError } from '../integrations/github/sandbox.js';
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryBindingPreparationInput } from '../rules/dispatcher.js';
@@ -839,6 +840,9 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           projects: deps.domains.projects,
           workItems: deps.domains.workItems,
           configVersion: deps.configVersion,
+          ...(githubIntegration && githubStorage ? {
+            verifyIssueCompletionEvidence: createIssueCompletionGithubVerifier(githubIntegration, githubStorage),
+          } : {}),
         })
       : []),
   ];

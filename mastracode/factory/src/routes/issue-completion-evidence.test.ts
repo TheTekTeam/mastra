@@ -12,15 +12,15 @@ import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 const ORG = 'org1';
 const USER = { workosId: 'u1', organizationId: ORG };
 const REQUEST = '11111111-1111-4111-8111-111111111111';
-type Verify = (receipt: IssueCompletionReceipt, scope: { orgId: string; factoryProjectId: string }) => Promise<boolean>;
+type Verify = (receipt: IssueCompletionReceipt, scope: { orgId: string; factoryProjectId: string; repositoryId: string }) => Promise<boolean>;
 
-function app(seed: FactoryStorageTestSeed, verify?: Verify, user: typeof USER | null = USER, noAdmin = false) {
+function app(seed: FactoryStorageTestSeed, verify?: Verify, user: typeof USER | null = USER, noAdmin = false, enabled = true) {
   const hono = new Hono();
   hono.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
     await next();
   });
-  const auth = fakeRouteAuth(noAdmin ? { isOrganizationAdmin: async () => false } : {});
+  const auth = fakeRouteAuth({ enabled, ...(noAdmin ? { isOrganizationAdmin: async () => false } : {}) });
   const audit = new AuditDomain({ auth, audit: seed.audit, projects: seed.projects });
   mountApiRoutes(hono as any, new AutomationRunRoutes({
     auth, audit, projects: seed.projects, workItems: seed.workItems,
@@ -38,8 +38,8 @@ async function fixture() {
     orgId: ORG, userId: 'u1', factoryProjectId: project.id,
     input: {
       title: 'GitHub issue 42', stages: ['intake'],
-      externalSource: { integrationId: 'github', type: 'issue', externalId: '42' },
-      metadata: { githubIssueNumber: 42, githubRepositoryId: 123, repository: 'TheTekTeam/HTAI' },
+      externalSource: { integrationId: 'github', type: 'issue', externalId: 'github-issue:42' },
+      metadata: { githubIssueNumber: 42, githubRepositoryId: 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa', repository: 'TheTekTeam/HTAI' },
     },
   });
   const path = `/web/factory/projects/${project.id}/issue-completion-evidence/${item.id}`;
@@ -60,7 +60,7 @@ async function fixture() {
     kind: 'issue_completion', schemaVersion: 1,
     projectId: project.id, workItemId: item.id, workItemRevision: item.revision,
     sourceRepository: 'TheTekTeam/HTAI', sourceIssueNumber: 42,
-    sourceVersion: 'issue-state-2026-11-06', sourceSnapshotId: 'htai-issue-42-snapshot',
+    sourceVersion: 'factory_0_25_issue_v1', sourceSnapshotId: 'd'.repeat(64),
     pullRequestNumber: 67, headSha: 'a'.repeat(40),
     reviewerIdentity: 'modelspend-reviewer',
     reviewHeadSha: 'a'.repeat(40), ciHeadSha: 'a'.repeat(40),
@@ -74,12 +74,12 @@ async function fixture() {
 
 async function persistCandidate(data: Awaited<ReturnType<typeof fixture>>) {
   const { seed, project, item, receipt } = data;
-  await seed.storage.ops.insertOne('factory_issue_completion_evidence', {
-    id: '99999999-9999-4999-8999-999999999999',
-    org_id: ORG, factory_project_id: project.id, work_item_id: item.id,
-    work_item_revision: item.revision,
-    proof: receipt, proof_digest: receipt.proofDigest, created_at: new Date(),
+  const result = await seed.workItems.acceptIssueCompletionEvidenceCandidate({
+    orgId: ORG, factoryProjectId: project.id, receipt,
+    // Independent GitHub App verifier is stubbed only in isolated route fixture.
+    verify: async () => true,
   });
+  expect(result.status).toBe('committed');
 }
 
 describe('authenticated native issue completion readback', () => {
@@ -98,6 +98,7 @@ describe('authenticated native issue completion readback', () => {
     expect((await app(f.seed, undefined, { workosId: 'other' }).request(f.path)).status).toBe(403);
     expect((await app(f.seed, undefined, USER, true).request(f.path)).status).toBe(409);
     expect((await app(f.seed).request(f.path)).status).toBe(409);
+    expect((await app(f.seed, undefined, null, false, false).request(f.path)).status).toBe(401);
     expect((await app(f.seed).request(f.path.replace(f.item.id, 'bogus'))).status).toBe(404);
   });
 
@@ -106,15 +107,53 @@ describe('authenticated native issue completion readback', () => {
     await persistCandidate(f);
     expect((await app(f.seed, async () => false).request(f.path)).status).toBe(409);
     expect((await app(f.seed, async () => { throw new Error('upstream failed'); }).request(f.path)).status).toBe(409);
-    const verifier = vi.fn(async (candidate: IssueCompletionReceipt, scope: { orgId: string; factoryProjectId: string }) => {
+    const verifier = vi.fn(async (candidate: IssueCompletionReceipt, scope: { orgId: string; factoryProjectId: string; repositoryId: string }) => {
       expect(candidate).toEqual(f.receipt);
-      expect(scope).toEqual({ orgId: ORG, factoryProjectId: f.project.id });
+      expect(scope).toEqual({ orgId: ORG, factoryProjectId: f.project.id,
+        repositoryId: 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
       return true;
     });
     const response = await app(f.seed, verifier).request(f.path);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(f.receipt);
     expect(verifier).toHaveBeenCalledTimes(1);
+  });
+
+  it('restricted source-only ingress is insert-once, audited, collision-safe and has no HTTP POST', async () => {
+    const f = await fixture();
+    const denied = await f.seed.workItems.acceptIssueCompletionEvidenceCandidate({
+      orgId: ORG, factoryProjectId: f.project.id, receipt: f.receipt,
+      verify: async () => false,
+    });
+    expect(denied.status).toBe('unverified');
+    expect((await app(f.seed).request(f.path)).status).toBe(404);
+    await persistCandidate(f);
+    const replay = await f.seed.workItems.acceptIssueCompletionEvidenceCandidate({
+      orgId: ORG, factoryProjectId: f.project.id, receipt: f.receipt,
+      verify: async () => true,
+    });
+    expect(replay.status).toBe('replayed');
+    const rows = await f.seed.storage.ops.findMany('factory_issue_completion_evidence', {
+      org_id: ORG, factory_project_id: f.project.id, work_item_id: f.item.id,
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ issuer_id: 'modelspend-reviewer',
+      proof_digest: f.receipt.proofDigest });
+    expect((await app(f.seed).request(f.path, { method: 'POST' })).status).toBe(404);
+  });
+
+  it('fences item revision drift during external verification before immutable DB insert', async () => {
+    const f = await fixture();
+    const result = await f.seed.workItems.acceptIssueCompletionEvidenceCandidate({
+      orgId: ORG, factoryProjectId: f.project.id, receipt: f.receipt,
+      verify: async () => {
+        await f.seed.storage.ops.updateMany('work_items', { id: f.item.id },
+          { revision: f.item.revision + 1 });
+        return true;
+      },
+    });
+    expect(result.status).toBe('conflict');
+    expect((await app(f.seed).request(f.path)).status).toBe(404);
   });
 
   it('rejects checksum tampering, stale source revision, divergent CI head and native effect mismatch before verifier', async () => {
