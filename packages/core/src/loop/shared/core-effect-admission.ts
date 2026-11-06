@@ -18,7 +18,8 @@ export type CoreEffectBoundary =
   | 'dynamic-tool-resolution'
   | 'durable-recovery'
   | 'synchronous-clone-construction'
-  | 'synchronous-thread-signal';
+  | 'synchronous-thread-signal'
+  | 'synchronous-nonstrict-thread-registration';
 
 export class CoreEffectAdmissionDeniedError extends Error {
   constructor(boundary: CoreEffectBoundary, reason = 'trusted epoch/run admission unavailable') {
@@ -41,6 +42,7 @@ export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
     'durable-recovery',
     'synchronous-clone-construction',
     'synchronous-thread-signal',
+    'synchronous-nonstrict-thread-registration',
   ] as const,
   nativeSourceResolverInstalled: false,
   managerLeaseInstalled: false,
@@ -51,6 +53,7 @@ export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
     'eager-provider-construction',
     'direct-remote-gateway-execution',
     'provider-executed-tools',
+    'non-strict-thread-registration',
   ] as const),
   adoptionReady: false,
   runtimeMode: 'disabled' as const,
@@ -132,7 +135,9 @@ export class CoreSynchronousIngressGate {
     this.#mode = mode;
   }
 
-  assert(boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal'): void {
+  assert(
+    boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal' | 'synchronous-nonstrict-thread-registration',
+  ): void {
     if (this.#mode === 'disabled') return;
     throw new CoreEffectAdmissionDeniedError(boundary, 'synchronous route has no verified epoch reservation');
   }
@@ -142,7 +147,7 @@ export class CoreSynchronousIngressGate {
 const runtimeSynchronousIngressGate = new CoreSynchronousIngressGate(CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode);
 
 export function assertCoreSynchronousIngress(
-  boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal',
+  boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal' | 'synchronous-nonstrict-thread-registration',
 ): void {
   runtimeSynchronousIngressGate.assert(boundary);
 }

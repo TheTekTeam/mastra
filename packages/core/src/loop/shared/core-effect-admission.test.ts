@@ -28,6 +28,7 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
       'eager-provider-construction',
       'direct-remote-gateway-execution',
       'provider-executed-tools',
+      'non-strict-thread-registration',
     ]);
     expect(Object.isFrozen(CORE_EFFECT_ADMISSION_CAPABILITY.unsupportedEffectSources)).toBe(true);
     expect(beforeCoreModelProviderRequest()).toBeUndefined();
@@ -83,6 +84,7 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
       gate.assert('synchronous-clone-construction');
       queueState.clones += 1;
     }).toThrow(CoreEffectAdmissionDeniedError);
+    expect(() => gate.assert('synchronous-nonstrict-thread-registration')).toThrow(CoreEffectAdmissionDeniedError);
     expect(queueState).toEqual({ accepted: 0, clones: 0 });
   });
 
@@ -95,6 +97,7 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
       'durable-recovery',
       'synchronous-clone-construction',
       'synchronous-thread-signal',
+      'synchronous-nonstrict-thread-registration',
     ] as const) {
       let irreversibleEffect = false;
       await expect(

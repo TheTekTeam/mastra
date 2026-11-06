@@ -95,9 +95,9 @@ import {
   TRANSPORT_REF_KEY,
 } from '../../run-scope-keys';
 import { applyAutoResumeSystemMessage } from '../../shared/auto-resume-system-message';
+import { CoreEffectAdmissionDeniedError } from '../../shared/core-effect-admission';
 import { buildLlmPromptArgs } from '../../shared/build-llm-prompt-args';
 import { composeStepInput } from '../../shared/compose-step-input';
-import { CoreEffectAdmissionDeniedError } from '../../shared/core-effect-admission';
 import { injectBackgroundTaskPrompt } from '../../shared/inject-background-task-prompt';
 import { trackOpenReasoning, watchInterruptibleStream } from '../../shared/interruptible-stream';
 import { buildMemoryHeaders, mergeLlmCallHeaders } from '../../shared/merge-llm-call-headers';
@@ -1188,7 +1188,10 @@ async function processOutputStream<OUTPUT = undefined>({
 function isCoreEffectAdmissionDenied(error: unknown): boolean {
   return (
     error instanceof CoreEffectAdmissionDeniedError ||
-    (typeof error === 'object' && error !== null && 'name' in error && error.name === 'CoreEffectAdmissionDeniedError')
+    (typeof error === 'object' &&
+      error !== null &&
+      'name' in error &&
+      error.name === 'CoreEffectAdmissionDeniedError')
   );
 }
 
