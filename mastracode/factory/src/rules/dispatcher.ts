@@ -31,6 +31,7 @@ import type {
   FactoryDeferredDecisionRecord,
   FactoryDispatchFailureCode,
   FactoryPendingStartRecord,
+  FactoryQuotaSource,
   FactoryRunBindingRecord,
   WorkItemRow,
   WorkItemsStorage,
@@ -39,6 +40,8 @@ import type {
 import type { FactoryRunEndReporter } from '../tools/reports.js';
 import { decisionOvertaken } from './decision-applicability.js';
 import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata } from './dispatch-errors.js';
+import { validatedQuotaFallback } from './quota-fallback.js';
+import type { FactoryQuotaFallbackResolver, FactoryQuotaFallbackRequest } from './quota-fallback.js';
 import type { FactoryTransitionService } from './transition-service.js';
 import type { FactoryCommitDecision, FactoryRuleActor, FactoryRuleCausalEntry } from './types.js';
 import { externalSourceForWorkItem, externallyAuthoredWorkItem, FACTORY_RULE_STAGES } from './types.js';
@@ -112,6 +115,26 @@ function isProviderCallError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false;
   if ('name' in error && typeof error.name === 'string' && PROVIDER_CALL_ERROR_NAME.test(error.name)) return true;
   return 'statusCode' in error || 'responseBody' in error;
+}
+
+/** The provider request, not the session default, must identify the failed model. */
+function quotaRequestModel(error: unknown): string | null {
+  let cursor = error;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === 'object'; depth++) {
+    try {
+      const row = cursor as { name?: unknown; requestBodyValues?: unknown; cause?: unknown };
+      const body = row.requestBodyValues;
+      if (typeof row.name === 'string' && PROVIDER_CALL_ERROR_NAME.test(row.name) &&
+          body && typeof body === 'object') {
+        const model = (body as { model?: unknown }).model;
+        if (typeof model === 'string' && model.trim()) return model.trim();
+      }
+      cursor = row.cause;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function runErrorCode(error: unknown, message: string): FactoryDispatchFailureCode {
@@ -397,6 +420,8 @@ export interface FactoryDecisionDispatcherOptions {
   reconcileToolResults?: () => Promise<void>;
   prepareBinding?: (input: FactoryBindingPreparationInput) => Promise<void>;
   primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  /** Disabled by default; an authenticated native resolver must prove scoped, entitled, compatible policy. */
+  resolveQuotaFallback?: FactoryQuotaFallbackResolver;
   /**
    * Told when a run fails terminally at dispatch, so whoever follows the item
    * hears about failures no run end covers. How runs end is reported by the
@@ -628,6 +653,7 @@ export class FactoryDecisionDispatcher {
   readonly #reconcileToolResults?: () => Promise<void>;
   readonly #prepareBinding?: (input: FactoryBindingPreparationInput) => Promise<void>;
   readonly #primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  readonly #resolveQuotaFallback?: FactoryQuotaFallbackResolver;
   readonly #reportRunEnd?: FactoryRunEndReporter;
   readonly #feedReader?: FactoryFeedReader;
   readonly #dismissStaleReviews?: FactoryDecisionDispatcherOptions['dismissStaleReviews'];
@@ -662,6 +688,7 @@ export class FactoryDecisionDispatcher {
     this.#reconcileToolResults = options.reconcileToolResults;
     this.#prepareBinding = options.prepareBinding;
     this.#primeCredentials = options.primeCredentials;
+    this.#resolveQuotaFallback = options.resolveQuotaFallback;
     this.#reportRunEnd = options.reportRunEnd;
     this.#feedReader = options.feedReader;
     this.#dismissStaleReviews = options.dismissStaleReviews;
@@ -840,6 +867,135 @@ export class FactoryDecisionDispatcher {
     }
   }
 
+  /**
+   * A quota from a subagent may differ from the primary session model. Only a
+   * provider error that names the exact active model can be attributed. Missing
+   * evidence keeps the durable wait but forbids automated cross-provider use.
+   */
+  async #captureQuotaSource(
+    error: unknown,
+    orgId: string,
+    factoryProjectId: string,
+    binding: FactoryRunBindingRecord | undefined,
+  ): Promise<FactoryQuotaSource | null> {
+    if (!binding || binding.orgId !== orgId || binding.factoryProjectId !== factoryProjectId) return null;
+    const requestedModel = quotaRequestModel(error);
+    if (!requestedModel) return null;
+    try {
+      const [item, session] = await Promise.all([
+        this.#storage.get({ orgId, id: binding.workItemId }),
+        this.#controller.getSession(binding.sessionId),
+      ]);
+      if (!item || !session) return null;
+      const state = session.state.get();
+      const activeModel = session.model.get();
+      if (!activeModel || !activeModel.includes('/')) return null;
+      const slash = activeModel.indexOf('/');
+      const providerId = activeModel.slice(0, slash);
+      const providerModel = activeModel.slice(slash + 1);
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(providerId) ||
+          !providerModel || (requestedModel !== activeModel && requestedModel !== providerModel)) return null;
+      const scope = state?.factoryModelScope;
+      const ownerUserId = state?.factoryOwnerUserId;
+      if ((scope !== 'user' && scope !== 'factory') ||
+          !ownerUserId ||
+          state?.factoryOrgId !== orgId ||
+          state?.factoryProjectId !== factoryProjectId ||
+          item.sessions[binding.role]?.startedBy !== ownerUserId) return null;
+      return {
+        providerId, modelId: activeModel, credentialScope: scope,
+        ownerUserId, bindingId: binding.id, branch: binding.branch,
+        workItemRevision: item.revision,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Runs only while the existing Factory lease is held, after a due quota
+   * pause. The normal dispatch path still reconciles previous run/delivery
+   * effects, checks supersession and uses its idempotency keys. An absent
+   * resolver or any stale policy/head/capability evidence means no switch.
+   */
+  async #maybeSwitchQuotaFallback(
+    record: FactoryDeferredDecisionRecord | FactoryPendingStartRecord,
+    binding: FactoryRunBindingRecord,
+    session: BoundDispatcherSession,
+    item: WorkItemRow | null,
+  ): Promise<void> {
+    const source = record.quotaSource;
+    if (!source || !this.#resolveQuotaFallback || !item) return;
+    if (source.bindingId !== binding.id ||
+        source.branch !== binding.branch ||
+        source.workItemRevision !== item.revision ||
+        record.orgId !== binding.orgId ||
+        record.factoryProjectId !== binding.factoryProjectId ||
+        session.model.get() !== source.modelId) return;
+    const state = session.state.get();
+    if (state?.factoryOrgId !== record.orgId ||
+        state?.factoryProjectId !== record.factoryProjectId ||
+        state?.factoryOwnerUserId !== source.ownerUserId ||
+        state?.factoryModelScope !== source.credentialScope ||
+        item.sessions[binding.role]?.startedBy !== source.ownerUserId ||
+        session.run.isRunning() ||
+        session.suspensions.hasPending() ||
+        this.#controller.listActiveThreadRuns().some(run => run.threadId === binding.threadId)) return;
+    // An unobserved prior effect may still be running on a second replica.
+    // Never switch until its open-run ledger is clear; dispatch performs the
+    // existing exact-delivery reconciliation after this additional fence.
+    try {
+      if ((await listSessionOpenRuns(session)).some(run => run.bindingId === binding.id)) return;
+      const request: FactoryQuotaFallbackRequest = {
+        orgId: record.orgId,
+        factoryProjectId: record.factoryProjectId,
+        workItemId: binding.workItemId,
+        workItemRevision: item.revision,
+        bindingId: binding.id,
+        threadId: binding.threadId,
+        branch: binding.branch,
+        source,
+      };
+      const modelId = validatedQuotaFallback(request, await this.#resolveQuotaFallback(request));
+      if (!modelId) return;
+      // The resolver ran asynchronously. Reject a transition, lease switch or
+      // session-model change that happened while it checked external policy.
+      const current = await this.#storage.get({ orgId: record.orgId, id: binding.workItemId });
+      const bindings = await this.#storage.listRunBindings(record.orgId, record.factoryProjectId, binding.workItemId);
+      if (current?.revision !== item.revision ||
+          !bindings.some(candidate => candidate.id === binding.id &&
+            candidate.status === 'active' && candidate.branch === binding.branch) ||
+          session.model.get() !== source.modelId ||
+          session.run.isRunning() ||
+          this.#controller.listActiveThreadRuns().some(run => run.threadId === binding.threadId) ||
+          (await listSessionOpenRuns(session)).some(run => run.bindingId === binding.id)) return;
+      // The policy check may have taken longer than a lease. Renew with the
+      // original owner identity before changing session model state.
+      const lease = leaseIdentity(record, this.#ownerId);
+      const expiry = new Date(Date.now() + LEASE_MS);
+      const stillOwned = 'decision' in record
+        ? await this.#storage.renewDeferredDecisionLease(lease, expiry)
+        : await this.#storage.renewPendingStartLease(lease, expiry);
+      if (!stillOwned) return;
+      await session.model.switch(modelId);
+    } catch (error) {
+      // Model switching can fail *after* a partial state change. Return to the
+      // original entitled provider before the standard run path proceeds; if
+      // restoration fails, stop rather than dispatch with unknown authority.
+      if (session.model.get() !== source.modelId) {
+        try {
+          await session.model.switch(source.modelId);
+        } catch {
+          throw new FactoryDispatchError(
+            'run_configuration_invalid',
+            'Factory quota fallback could not restore the authorised model after a failed switch.',
+          );
+        }
+      }
+      console.warn('Factory quota fallback unavailable', sanitizeDispatchError(error));
+    }
+  }
+
   async #dispatchDecision(record: FactoryDeferredDecisionRecord, now: Date): Promise<void> {
     let executionCompleted = false;
     try {
@@ -854,7 +1010,19 @@ export class FactoryDecisionDispatcher {
       await this.#withLease(
         async leaseExpiresAt =>
           this.#storage.renewDeferredDecisionLease(leaseIdentity(record, this.#ownerId), leaseExpiresAt),
-        async () => this.#executeDecision(record, decision),
+        async () => {
+          if (record.quotaSource && 'role' in decision && typeof decision.role === 'string') {
+            const binding = await this.#findBinding(record, decision.role);
+            if (binding) {
+              const [session, item] = await Promise.all([
+                this.#requireSession(binding),
+                this.#storage.get({ orgId: record.orgId, id: binding.workItemId }),
+              ]);
+              await this.#maybeSwitchQuotaFallback(record, binding, session, item);
+            }
+          }
+          await this.#executeDecision(record, decision);
+        },
       );
       executionCompleted = true;
       const completed = await this.#storage.completeDeferredDecision(leaseIdentity(record, this.#ownerId), new Date());
@@ -866,6 +1034,17 @@ export class FactoryDecisionDispatcher {
       }
       const failureCode = factoryDispatchFailureCode(error);
       const quotaPaused = failureCode === 'run_quota_exhausted';
+      let quotaSource: FactoryQuotaSource | null = null;
+      if (quotaPaused && record.workItemId) {
+        try {
+          const decision = validateFactoryRuleDecision(record.decision, record.causalChain.length);
+          const role = 'role' in decision && typeof decision.role === 'string' ? decision.role : undefined;
+          const binding = role ? await this.#findBinding(record, role) : undefined;
+          quotaSource = await this.#captureQuotaSource(error, record.orgId, record.factoryProjectId, binding);
+        } catch {
+          // Missing attribution never authorises a provider switch.
+        }
+      }
       const terminal = !quotaPaused && isTerminalFailure(record.attempts - record.quotaPauses, failureCode);
       const failed = await this.#storage.failDeferredDecision({
         ...leaseIdentity(record, this.#ownerId),
@@ -875,6 +1054,7 @@ export class FactoryDecisionDispatcher {
         failureCode,
         terminal,
         quotaPaused,
+        quotaSource,
         advanceDeliveryGeneration: !executionCompleted,
       });
       if (terminal && failed) await this.#supersedeFailureOnSettledCard(failed);
@@ -1816,6 +1996,7 @@ export class FactoryDecisionDispatcher {
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const session = await this.#requireSession(binding);
+          await this.#maybeSwitchQuotaFallback(record, binding, session, item ?? null);
           const requestContext = factoryRequestContext({
             session,
             binding,
@@ -1889,6 +2070,16 @@ export class FactoryDecisionDispatcher {
       if (!completed) throw new Error('Factory kickoff lease was lost before completion.');
     } catch (error) {
       const failureCode = factoryDispatchFailureCode(error);
+      let quotaSource: FactoryQuotaSource | null = null;
+      if (failureCode === 'run_quota_exhausted') {
+        try {
+          const bindings = await this.#storage.listRunBindings(record.orgId, record.factoryProjectId);
+          const binding = bindings.find(candidate => candidate.id === record.bindingId && candidate.status === 'active');
+          quotaSource = await this.#captureQuotaSource(error, record.orgId, record.factoryProjectId, binding);
+        } catch {
+          // Quota still parks safely; unverified provider cannot trigger failover.
+        }
+      }
       await this.#storage.failPendingStart({
         ...leaseIdentity(record, this.#ownerId),
         now: new Date(),
@@ -1897,6 +2088,7 @@ export class FactoryDecisionDispatcher {
         lastError: sanitizeDispatchError(error),
         failureCode,
         quotaPaused: failureCode === 'run_quota_exhausted',
+        quotaSource,
         terminal:
           failureCode !== 'run_quota_exhausted' && isTerminalFailure(record.attempts - record.quotaPauses, failureCode),
       });
