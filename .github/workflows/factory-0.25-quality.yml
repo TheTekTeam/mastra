@@ -16,6 +16,8 @@ on:
       - 'mastracode/factory/**'
       - 'mastracode/web/src/mastra/index.ts'
       - 'mastracode/web/src/mastra/index.test.ts'
+      - 'mastracode/web/scripts/verify-better-auth-pg18.mjs'
+      - 'mastracode/web/SELF_HOSTED_BETTER_AUTH_POLICY.md'
       - 'mastracode/web/package.json'
       - 'mastracode/web/pnpm-lock.yaml'
       - 'packages/cli/src/commands/api/factory-route-metadata.generated.ts'
@@ -132,3 +134,18 @@ jobs:
           pnpm --dir mastracode/web run build
           test -s mastracode/web/.mastra/output/mastra.mjs
           pnpm --dir mastracode/web exec vitest run src/mastra/index.test.ts --reporter=dot --maxWorkers=1
+
+      - name: Verify default-deny signup, existing login and native receipt with disposable PostgreSQL 18 HTTP
+        timeout-minutes: 16
+        env:
+          FACTORY_QA_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FACTORY_QA_EXPECTED_HEAD"
+          packed="$(cd mastracode/factory && npm pack --ignore-scripts --pack-destination "$RUNNER_TEMP" --silent)"
+          test "$packed" = 'mastra-factory-0.25.0.tgz'
+          tarball="$RUNNER_TEMP/$packed"
+          test -s "$tarball"
+          (cd mastracode/web && corepack pnpm add --offline --ignore-scripts "@mastra/factory@file:$tarball")
+          (cd mastracode/web/.mastra/output && corepack pnpm add --offline --ignore-scripts "@mastra/factory@file:$tarball")
+          node mastracode/web/scripts/verify-better-auth-pg18.mjs
