@@ -85,6 +85,12 @@ const serviceCapabilityIssueIntentSchema = z.object({
   operation: z.literal('issue'),
   actions: z.array(z.enum(['workItem.enqueue', 'projectAutomation.set'])).min(1).max(2),
   workItemIds: z.array(uuidSchema).max(8),
+  enqueueProfiles: z.array(z.object({
+    workItemId: uuidSchema,
+    role: z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/),
+    skillName: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/),
+    argumentsDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).max(8),
   ttlSeconds: z.number().int().min(60).max(86_400),
 }).strict();
 const serviceCapabilityRevokeIntentSchema = z.object({
