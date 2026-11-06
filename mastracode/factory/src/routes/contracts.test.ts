@@ -24,12 +24,13 @@ import {
   updateProjectBodySchema,
 } from './contracts.js';
 import { ProjectRoutes } from './projects.js';
+import { ServiceCapabilityRoutes } from './service-capabilities.js';
 import { WorkItemRoutes } from './work-items.js';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
 const decisionId = '22222222-2222-4222-8222-222222222222';
 
-function registeredFactoryRoutes() {
+function registeredFactoryRoutes(includeOptInServiceRoutes = false) {
   const projects = new ProjectRoutes({
     auth: {},
     projects: {},
@@ -61,15 +62,21 @@ function registeredFactoryRoutes() {
     workItems,
     configVersion: 'test',
   } as never);
-  return [...projects, ...work, ...attention, ...automationRuns];
+  const optInService = includeOptInServiceRoutes
+    ? new ServiceCapabilityRoutes({ auth: {}, capabilities: {}, projects: {} } as never).routes()
+    : [];
+  return [...projects, ...work, ...attention, ...automationRuns, ...optInService];
 }
 
 describe('Factory route contracts', () => {
   it('matches every in-scope registered method and path', () => {
-    const registered = new Set(registeredFactoryRoutes().map(route => `${route.method} ${route.path}`));
+    const registered = new Set(registeredFactoryRoutes(true).map(route => `${route.method} ${route.path}`));
     for (const contract of Object.values(FACTORY_ROUTE_CONTRACTS)) {
       expect(registered, `${contract.method} ${contract.path}`).toContain(`${contract.method} ${contract.path}`);
     }
+    // Default-OFF Factory deliberately registers none of these admin routes.
+    const defaultRoutes = new Set(registeredFactoryRoutes().map(route => `${route.method} ${route.path}`));
+    expect(defaultRoutes).not.toContain(`${FACTORY_ROUTE_CONTRACTS.serviceCapabilityConsent.method} ${FACTORY_ROUTE_CONTRACTS.serviceCapabilityConsent.path}`);
   });
 
   it('preserves normalized project and work-item request behavior', () => {
