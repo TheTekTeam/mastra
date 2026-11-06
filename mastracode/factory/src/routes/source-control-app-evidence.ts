@@ -22,16 +22,16 @@ const path = FACTORY_ROUTE_CONTRACTS.projectAppEvidenceGet.path;
 const ttlMs = 90_000;
 const maxEvidence = 100;
 
-type AppClient = Pick<GithubIntegration, 'getAppOctokit' | 'getInstallationOctokit'>;
-type Scope = { orgId: string; projectId: string; expectedRepository: string; expectedAutomationRevision: number };
-interface Options {
+export type AppClient = Pick<GithubIntegration, 'getAppOctokit' | 'getInstallationOctokit'>;
+export type Scope = { orgId: string; projectId: string; expectedRepository: string; expectedAutomationRevision: number };
+export interface Options {
   auth: RouteAuth;
   projects: FactoryProjectsStorage;
   sourceControl: SourceControlStorageHandle;
   github: AppClient;
   enabled?: boolean;
 }
-interface Binding {
+export interface Binding {
   factoryOrgId: string;
   projectId: string;
   projectRepositoryLinkId: string;
@@ -70,7 +70,7 @@ function timestamp(value: string | null | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-async function binding(options: Options, scope: Scope): Promise<Binding | null> {
+export async function binding(options: Options, scope: Scope): Promise<Binding | null> {
   const project = await options.projects.get({ orgId: scope.orgId, id: scope.projectId });
   if (!project || !Number.isSafeInteger(project.automationRevision) ||
       project.automationRevision !== scope.expectedAutomationRevision) return null;
@@ -120,7 +120,7 @@ async function binding(options: Options, scope: Scope): Promise<Binding | null> 
 // Public repos.get is not grant evidence: a public repository can remain
 // readable after it is removed from this installation. Prove membership from
 // the installation-authenticated repository catalogue itself, and repeat it.
-function installationGrantsRepository(result: unknown, selection: Binding): boolean {
+export function installationGrantsRepository(result: unknown, selection: Binding): boolean {
   const payload = (result as { data?: { total_count?: unknown; repositories?: unknown } } | null)?.data;
   if (!payload || !Number.isSafeInteger(payload.total_count) ||
       typeof payload.total_count !== 'number' || payload.total_count < 1 ||
@@ -306,4 +306,22 @@ export function buildProjectAppEvidenceRoutes(options: Options): ApiRoute[] {
       }
     },
   })];
+}
+
+/** Explicit authenticated JSON404 for disabled App read paths. Absence would
+ * fall through to the web SPA and return misleading HTML200 to signed-in users.
+ * This reveals neither existence nor identity of any project or App grant.
+ */
+export function buildUnavailableProjectAppReadRoutes(auth: RouteAuth, paths: string[]): ApiRoute[] {
+  return paths.map(disabledPath => registerApiRoute(disabledPath, {
+    method: 'GET',
+    requiresAuth: false,
+    handler: async raw => {
+      const c = raw as Context;
+      if (!auth.enabled()) return c.json({ error: 'operator_signin_required' }, 401);
+      await auth.ensureUser(c);
+      if (!auth.tenant(c)?.orgId) return c.json({ error: 'unauthorized' }, 401);
+      return c.json({ error: 'not_found' }, 404);
+    },
+  }));
 }
