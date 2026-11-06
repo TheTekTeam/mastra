@@ -40,13 +40,22 @@ export class ServiceCapabilityRoutes extends Route<ServiceCapabilityRoutesDeps> 
     const tenant = auth.tenant(c);
     if (!tenant) return { response: c.json({ error: 'unauthorized' }, 401) };
     if (!tenant.orgId) return { response: c.json({ error: 'organization_required' }, 403) };
+    const scope = { orgId: tenant.orgId, userId: tenant.userId, projectId };
+    // A bearer on a browser-admin route is a confused-deputy hazard, even
+    // when the same request happens to include a valid human session.
+    if (capabilities.hasServiceCredential(c.req.header('authorization'))) {
+      await capabilities.auditManagementDenial({ ...scope, operation: 'grant.consent', reason: 'service_bearer_forbidden' });
+      return { response: c.json({ error: 'forbidden' }, 403) };
+    }
     if (
       !(await auth.isOrganizationAdmin(c, tenant.orgId)) ||
       !capabilities.allowsIssuer(tenant.userId, projectId)
     ) {
+      await capabilities.auditManagementDenial({ ...scope, operation: 'grant.consent', reason: 'issuer_forbidden' });
       return { response: c.json({ error: 'forbidden' }, 403) };
     }
     if (mutation && !capabilities.trustedAdminOrigin(c.req.header('origin'))) {
+      await capabilities.auditManagementDenial({ ...scope, operation: 'grant.consent', reason: 'trusted_origin_required' });
       return { response: c.json({ error: 'trusted_origin_required' }, 403) };
     }
     await projects.ensureReady();
@@ -72,7 +81,10 @@ export class ServiceCapabilityRoutes extends Route<ServiceCapabilityRoutesDeps> 
           const scope = await this.#admin(context, path.data.id, true);
           if ('response' in scope) return scope.response;
           const body = consentContract.bodySchema.safeParse(await readJson(context));
-          if (!body.success) return c.json({ error: 'invalid_service_capability_intent' }, 400);
+          if (!body.success) {
+            await capabilities.auditManagementDenial({ ...scope, operation: 'grant.consent', reason: 'invalid_intent' });
+            return c.json({ error: 'invalid_service_capability_intent' }, 400);
+          }
           const issuedAt = new Date();
           try {
             const consentToken = await capabilities.beginConsent({
@@ -97,7 +109,10 @@ export class ServiceCapabilityRoutes extends Route<ServiceCapabilityRoutesDeps> 
           const scope = await this.#admin(context, path.data.id, true);
           if ('response' in scope) return scope.response;
           const body = issueContract.bodySchema.safeParse(await readJson(context));
-          if (!body.success) return c.json({ error: 'invalid_service_capability_grant' }, 400);
+          if (!body.success) {
+            await capabilities.auditManagementDenial({ ...scope, operation: 'grant.issue', reason: 'invalid_grant' });
+            return c.json({ error: 'invalid_service_capability_grant' }, 400);
+          }
           const { consentToken, ...intent } = body.data;
           const result = await capabilities.issueGrant({
             ...scope,
@@ -135,7 +150,10 @@ export class ServiceCapabilityRoutes extends Route<ServiceCapabilityRoutesDeps> 
           const scope = await this.#admin(context, path.data.id, true);
           if ('response' in scope) return scope.response;
           const body = revokeContract.bodySchema.safeParse(await readJson(context));
-          if (!body.success) return c.json({ error: 'invalid_service_capability_revoke' }, 400);
+          if (!body.success) {
+            await capabilities.auditManagementDenial({ ...scope, operation: 'grant.revoke', reason: 'invalid_revoke' });
+            return c.json({ error: 'invalid_service_capability_revoke' }, 400);
+          }
           const intent: ServiceCapabilityRevokeIntent = { operation: 'revoke', targetGrantId: path.data.grantId };
           const result = await capabilities.revokeGrant({ ...scope, consentToken: body.data.consentToken, intent });
           if (result !== 'revoked') {
