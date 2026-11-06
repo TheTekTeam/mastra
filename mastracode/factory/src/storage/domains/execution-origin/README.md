@@ -49,6 +49,49 @@ management policy decision. When a Factory project is later selected, future
 Core admission must consult the **current** project epoch instead of trusting
 an old candidate label.
 
+## B2b PG memory reconciliation — still inert
+
+The separate `FactoryOriginMemoryReconciler` is a server-private adapter
+that couples a B2a candidate to **one** A0 PostgreSQL `MemoryPG.saveThread`
+transaction. It is not imported into Factory bootstrap, not wired to Core or
+BetterAuth, not exposed via HTTP and never enables `adoptionReady`.
+
+- Only a future verified BetterAuth server path can call
+  `issueAndWrite(privateContext, trustedMemoryWriter)`. The candidate anchor
+  remains inside an `AsyncLocalStorage` context and must never be serialized
+  to client code. The PG callback requires that exact one-use context; caller
+  metadata, session stamps, project/thread IDs and copied principals are
+  insufficient.
+- The same PG transaction locks the pending origin candidate and rechecks
+  exact server-owned source row, organization, owner, project, visibility,
+  branch, source/side status, existing project, and historical UNKNOWN
+  quarantine. It records `state=verified` **inside** the native thread
+  insertion transaction. Any callback or INSERT failure rolls back both.
+- `verified` means **one PG memory row was reconciled to one issued source
+  candidate**. It is NOT execution admission, an active session proof,
+  positive managed/unmanaged/personal classification, or a PM handover
+  attestation. No B1 scope/epoch is armed or written.
+- A lost response, callback failure or uncertain commit is always reported as
+  `effect_unverified`; the same request is never replayed. A separate trusted
+  readback must check origin and memory rows before any later action.
+- Source ownership lacks a native monotonic CAS revision in frozen 0.25;
+  the transaction checks the current tuple and locks it through memory
+  insertion, but cannot prove an ABA sequence before that lock. Activation
+  requires owner-revision fencing across *all* source owner/project mutation
+  paths. A0's current thread-before-epoch lock order also requires correction
+  before B1 epoch admission can be combined safely.
+
+PG18 focused tests cover forged direct writes, candidate+memory atomic commit,
+source owner/project drift, rollback, UNKNOWN quarantine, restart persistence
+and same-request no-replay. They use a disposable QA database only.
+
+**Not covered:** native Core execution/resume (A2), generic memory HTTP,
+direct Gateway remote agents, legacy/durable/stored-version execution,
+message/tool effects, session-start fencing or cross-process epoch
+handovers. Unsupported providers and unclassified history must fail closed
+for any future selected-project adoption. This B2b slice is intentionally
+*not an activation-ready guard*.
+
 ## Prerequisites before any activation
 
 - **B2b**: Verify all Factory ingress sources (human, side, Slack, API,
