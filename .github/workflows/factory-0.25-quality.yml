@@ -235,6 +235,28 @@ jobs:
             console.log("B1b/B2b PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
           ' "$RUNNER_TEMP/factory-b1b-b2b-pg18.json"
 
+      - name: Native issue completion storage PG18 cross-client replay (no skips)
+        timeout-minutes: 8
+        env:
+          COMPLETION_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          FACTORY_COMPLETION_PG_TEST_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$COMPLETION_EXPECTED_HEAD"
+          test -n "$FACTORY_COMPLETION_PG_TEST_URL"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/work-items/completion-evidence.test.ts \
+            src/storage/domains/work-items/completion-evidence.pg.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-completion-pg18.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests !== 6 || result.numPassedTests !== 6 ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("Factory issue completion PG18 tests skipped, missing or failed");
+            }
+            console.log("Factory issue completion PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/factory-completion-pg18.json"
+
       - name: Factory receipt, skill and dispatcher regressions
         timeout-minutes: 12
         run: |
