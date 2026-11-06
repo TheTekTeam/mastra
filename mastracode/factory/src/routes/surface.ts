@@ -16,6 +16,7 @@ import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryBindingPreparationInput } from '../rules/dispatcher.js';
 import { FactoryStartCoordinator } from '../rules/start-coordinator.js';
 import { FactoryTransitionService } from '../rules/transition-service.js';
+import type { ServiceCapabilityAuthority } from '../service-capabilities/authority.js';
 import {
   createSourceControlSessionLookup,
   ensureFactorySourceSession,
@@ -62,6 +63,7 @@ import { IntakeRoutes } from './intake.js';
 import { KnowledgeRoutes } from './knowledge.js';
 import { OAuthRoutes } from './oauth.js';
 import type { RouteAuth } from './route.js';
+import { ServiceCapabilityRoutes } from './service-capabilities.js';
 import { SkillRoutes } from './skills.js';
 import { buildSourceControlSessionRoutes } from './source-control-sessions.js';
 import { buildSourceControlSettingsRoutes } from './source-control-settings.js';
@@ -91,6 +93,7 @@ export interface FactoryApiRoutesDeps {
   liveSessions: LiveSessions;
   /** Request-auth seam threaded from the host (no service locator). */
   auth: RouteAuth;
+  serviceCapabilities?: ServiceCapabilityAuthority;
   /** Optional user directory for resolving persisted owners to display profiles. */
   users?: Pick<IUserProvider, 'getUser' | 'getUsers'>;
   authStorage: AuthStorage;
@@ -832,6 +835,13 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           liveSessions: deps.liveSessions,
         }).routes()
       : []),
+    ...(deps.factoryReady && deps.serviceCapabilities
+      ? new ServiceCapabilityRoutes({
+          auth: deps.auth,
+          capabilities: deps.serviceCapabilities,
+          projects: deps.domains.projects,
+        }).routes()
+      : []),
     ...(deps.factoryReady
       ? buildAutomationRunRoutes({
           auth: deps.auth,
@@ -839,6 +849,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           projects: deps.domains.projects,
           workItems: deps.domains.workItems,
           configVersion: deps.configVersion,
+          ...(deps.serviceCapabilities ? { serviceCapabilities: deps.serviceCapabilities } : {}),
         })
       : []),
   ];

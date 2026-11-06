@@ -19,6 +19,7 @@ import { MemorySettingsStorage } from './domains/memory-settings/base.js';
 import { ModelDefaultsStorage } from './domains/model-defaults/base.js';
 import { FactoryProjectsStorage } from './domains/projects/base.js';
 import { QueueHealthStorage } from './domains/queue-health/base.js';
+import { ServiceCapabilityStorage } from './domains/service-capabilities/base.js';
 import { SourceControlStorage } from './domains/source-control/base.js';
 import { WorkItemsStorage } from './domains/work-items/base.js';
 
@@ -30,6 +31,7 @@ export interface FactoryStorageTestSeed {
   credentials: ModelCredentialsStorage;
   integrations: IntegrationStorage;
   projects: FactoryProjectsStorage;
+  serviceCapabilities: ServiceCapabilityStorage;
   sourceControl: SourceControlStorage;
   modelDefaults: ModelDefaultsStorage;
   memorySettings: MemorySettingsStorage;
@@ -57,6 +59,7 @@ export async function createFactoryStorageForTests({
   const credentials = storage.registerDomain(new ModelCredentialsStorage());
   const integrations = storage.registerDomain(new IntegrationStorage());
   const projects = storage.registerDomain(new FactoryProjectsStorage());
+  const serviceCapabilities = storage.registerDomain(new ServiceCapabilityStorage());
   const sourceControl = storage.registerDomain(new SourceControlStorage());
   const modelDefaults = storage.registerDomain(new ModelDefaultsStorage());
   const memorySettings = storage.registerDomain(new MemorySettingsStorage());
@@ -74,6 +77,7 @@ export async function createFactoryStorageForTests({
     credentials,
     integrations,
     projects,
+    serviceCapabilities,
     sourceControl,
     modelDefaults,
     memorySettings,

@@ -105,6 +105,8 @@ import type { MastraFactorySandboxOption } from './sandbox/session-sandbox.js';
 import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
+import { ServiceCapabilityAuthority } from './service-capabilities/authority.js';
+import type { ServiceCapabilityPolicy } from './service-capabilities/authority.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
@@ -143,6 +145,7 @@ import { factoryMemorySettingsUserId, MemorySettingsStorage } from './storage/do
 import { ModelDefaultsStorage } from './storage/domains/model-defaults/base.js';
 import { FactoryProjectsStorage } from './storage/domains/projects/base.js';
 import { QueueHealthStorage } from './storage/domains/queue-health/base.js';
+import { ServiceCapabilityStorage } from './storage/domains/service-capabilities/base.js';
 import { SourceControlStorage } from './storage/domains/source-control/base.js';
 import { WorkItemsStorage } from './storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, WorkItemRow } from './storage/domains/work-items/base.js';
@@ -232,6 +235,8 @@ export interface MastraFactoryConfig {
    * static host, so credentialed requests must be explicitly allowed.
    */
   allowedOrigins?: string[];
+  /** Explicit, disabled-by-default Factory service-principal pilot; never grants human admin. */
+  serviceCapabilities?: ServiceCapabilityPolicy;
   /**
    * The host's sandbox: a FactorySandbox instance such as
    * `new PlatformFactorySandbox({ ... })`, which owns the session sandbox
@@ -622,6 +627,16 @@ export class MastraFactory {
     // default persistence surface for integrations without a bespoke domain.
     const integrationStorage = storage.registerDomain(new IntegrationStorage(secretEncryption));
     const factoryProjectsStorage = storage.registerDomain(new FactoryProjectsStorage());
+    if (this.#config.serviceCapabilities && !auth) {
+      throw new Error('Service capabilities require authenticated Factory organization sessions');
+    }
+    const serviceCapabilities = this.#config.serviceCapabilities
+      ? new ServiceCapabilityAuthority({
+          storage: storage.registerDomain(new ServiceCapabilityStorage()),
+          projects: factoryProjectsStorage,
+          policy: this.#config.serviceCapabilities,
+        })
+      : undefined;
     const filesystemStorage = storage.registerDomain(new FilesystemStorage());
     const sourceControlStorage = storage.registerDomain(new SourceControlStorage());
     // Reverse index from a platform sender (Slack/Discord/...) to a Mastra
@@ -1044,6 +1059,7 @@ export class MastraFactory {
     const environmentBuilds = this.#environmentBuilds;
     const projectRoutes = new ProjectRoutes({
       auth: routeAuth,
+      ...(serviceCapabilities ? { serviceCapabilities } : {}),
       sandbox: this.#sandbox,
       ...(environmentBuilds ? { environmentBuilds } : {}),
       projects: factoryProjectsStorage,
@@ -1687,6 +1703,7 @@ export class MastraFactory {
             controller,
             liveSessions: liveSessionsTouchingTheFeed(controller, eventBus),
             auth: routeAuth,
+            ...(serviceCapabilities ? { serviceCapabilities } : {}),
             ...(auth && isUserProvider(auth) ? { users: auth } : {}),
             authStorage,
             audit: auditDomain,

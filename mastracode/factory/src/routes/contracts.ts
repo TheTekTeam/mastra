@@ -81,6 +81,33 @@ export const compareAndSetProjectAutomationBodySchema = z
   })
   .strict();
 
+const serviceCapabilityIssueIntentSchema = z.object({
+  operation: z.literal('issue'),
+  actions: z.array(z.enum(['workItem.enqueue', 'projectAutomation.set'])).min(1).max(2),
+  workItemIds: z.array(uuidSchema).max(8),
+  enqueueProfiles: z.array(z.object({
+    workItemId: uuidSchema,
+    role: z.string().min(1).max(64).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/),
+    skillName: z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/),
+    argumentsDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  }).strict()).max(8),
+  ttlSeconds: z.number().int().min(60).max(86_400),
+}).strict();
+const serviceCapabilityRevokeIntentSchema = z.object({
+  operation: z.literal('revoke'),
+  targetGrantId: uuidSchema,
+}).strict();
+export const serviceCapabilityConsentBodySchema = z.discriminatedUnion('operation', [
+  serviceCapabilityIssueIntentSchema,
+  serviceCapabilityRevokeIntentSchema,
+]);
+export const serviceCapabilityIssueBodySchema = serviceCapabilityIssueIntentSchema.extend({
+  consentToken: z.string().regex(/^fcc1_[A-Za-z0-9_-]{43}$/),
+});
+export const serviceCapabilityRevokeBodySchema = z.object({
+  consentToken: z.string().regex(/^fcc1_[A-Za-z0-9_-]{43}$/),
+}).strict();
+
 const environmentRepositorySchema = z.object({
   projectRepositoryId: z.string(),
   connectionId: z.string(),
@@ -514,6 +541,37 @@ export const FACTORY_ROUTE_CONTRACTS = {
     pathSchema: projectPathSchema,
     bodySchema: compareAndSetProjectAutomationBodySchema,
     responseSchema: projectResponseSchema,
+  },
+  serviceCapabilityConsent: {
+    method: 'POST',
+    path: '/web/factory/projects/:id/service-capability/consents',
+    description: 'Create one-use project-scoped GP administrator consent (opt-in only)',
+    pathSchema: projectPathSchema,
+    bodySchema: serviceCapabilityConsentBodySchema,
+    responseSchema: z.object({ consentToken: z.string(), expiresAt: z.string() }),
+  },
+  serviceCapabilityGrantIssue: {
+    method: 'POST',
+    path: '/web/factory/projects/:id/service-capability/grants',
+    description: 'Issue one expiring scoped service credential with consent (opt-in only)',
+    pathSchema: projectPathSchema,
+    bodySchema: serviceCapabilityIssueBodySchema,
+    responseSchema: z.object({ grant: entitySchema, token: z.string() }),
+  },
+  serviceCapabilityGrantList: {
+    method: 'GET',
+    path: '/web/factory/projects/:id/service-capability/grants',
+    description: 'List service grant metadata without bearer/digest (opt-in only)',
+    pathSchema: projectPathSchema,
+    responseSchema: z.object({ grants: z.array(entitySchema) }),
+  },
+  serviceCapabilityGrantRevoke: {
+    method: 'POST',
+    path: '/web/factory/projects/:id/service-capability/grants/:grantId/revoke',
+    description: 'Revoke exact service grant after one-use admin consent (opt-in only)',
+    pathSchema: z.object({ id: uuidSchema, grantId: uuidSchema }),
+    bodySchema: serviceCapabilityRevokeBodySchema,
+    responseSchema: z.object({ revoked: z.literal(true) }),
   },
   projectEnvironmentGet: {
     method: 'GET',
