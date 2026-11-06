@@ -14,6 +14,7 @@ on:
       - ready_for_review
     paths:
       - 'mastracode/factory/**'
+      - 'packages/cli/src/commands/api/factory-route-metadata.generated.ts'
       - '.changeset/**'
       - '.github/workflows/factory-0.25-quality.yml'
 
@@ -72,6 +73,17 @@ jobs:
       - name: Build Factory package
         timeout-minutes: 8
         run: pnpm --filter @mastra/factory build:lib
+
+      - name: Verify deterministic generated Factory CLI route metadata
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          manifest=packages/cli/src/commands/api/factory-route-metadata.generated.ts
+          before="$(sha256sum "$manifest" | awk '{print $1}')"
+          pnpm --filter @mastra/factory generate:api-cli-route-metadata
+          after="$(sha256sum "$manifest" | awk '{print $1}')"
+          test "$before" = "$after"
+          git diff --exit-code -- "$manifest"
 
       - name: Factory TypeScript check
         timeout-minutes: 8
