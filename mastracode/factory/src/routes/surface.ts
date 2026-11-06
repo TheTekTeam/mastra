@@ -65,6 +65,7 @@ import type { RouteAuth } from './route.js';
 import { SkillRoutes } from './skills.js';
 import { buildSourceControlSessionRoutes } from './source-control-sessions.js';
 import { buildSourceControlSettingsRoutes } from './source-control-settings.js';
+import { buildProjectAppEvidenceRoutes } from './source-control-app-evidence.js';
 import { invalidateTenantCredentialSnapshots } from './tenant-credentials.js';
 import { WorkItemRoutes } from './work-items.js';
 
@@ -789,6 +790,12 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
     }).routes(),
     ...sourceControlSessionRoutes,
     ...(sourceControls.length === 0 ? [] : buildSourceControlSettingsRoutes({ auth: deps.auth, sourceControls })),
+    ...(githubStorage && githubIntegration
+      ? buildProjectAppEvidenceRoutes({
+          auth: deps.auth, projects: deps.domains.projects,
+          sourceControl: githubStorage, github: githubIntegration,
+        })
+      : []),
     ...providerRoutes,
     ...absentStubs,
     ...slackAbsentStubs,
