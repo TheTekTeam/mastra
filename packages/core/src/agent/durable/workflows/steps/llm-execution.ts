@@ -2573,7 +2573,19 @@ export function createDurableLLMExecutionStep(_options?: DurableLLMExecutionStep
             // Check if the stream captured an error (MastraModelOutput swallows errors internally)
             const streamError = outputStream.error;
             if (streamError) {
-              const streamErrorObj = streamError instanceof Error ? streamError : new Error(String(streamError));
+              // A remote stream may hand back a serialized denial object.
+              // Preserve its trusted failure identity as a cause, even when
+              // constructing an Error for logging and terminal reporting.
+              const serializedMessage =
+                streamError && typeof streamError === 'object' && 'message' in streamError
+                  ? (streamError as { message?: unknown }).message
+                  : undefined;
+              const streamErrorObj =
+                streamError instanceof Error
+                  ? streamError
+                  : new Error(typeof serializedMessage === 'string' ? serializedMessage : String(streamError), {
+                      cause: streamError,
+                    });
               logger?.error?.('Stream captured error', { error: streamErrorObj, runId });
 
               if (modelSpanTracker) {
