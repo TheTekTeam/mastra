@@ -177,7 +177,7 @@ jobs:
             }
           ' "$RUNNER_TEMP/factory-core-a2.json" "$RUNNER_TEMP/core-a2.json"
 
-      - name: Factory App evidence project scope and grant revocation (no skips)
+      - name: Factory App issue evidence and project-binding grant revocation (no skips)
         timeout-minutes: 8
         env:
           APP_EVIDENCE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
@@ -192,11 +192,11 @@ jobs:
             --reporter=json --outputFile="$RUNNER_TEMP/factory-app-evidence.json" --maxWorkers=1
           node -e '
             const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
-            if (result.numTotalTests < 54 || result.numPassedTests !== result.numTotalTests ||
+            if (result.numTotalTests < 70 || result.numPassedTests !== result.numTotalTests ||
                 result.numPendingTests !== 0 || result.numFailedTests !== 0) {
               throw new Error("Factory App evidence route tests skipped, missing or failed");
             }
-            console.log("Factory App evidence routes: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+            console.log("Factory App evidence and project-binding routes: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
           ' "$RUNNER_TEMP/factory-app-evidence.json"
 
       - name: A0 PostgreSQL 18 guarded-thread integration (exact head, no skipped tests)
