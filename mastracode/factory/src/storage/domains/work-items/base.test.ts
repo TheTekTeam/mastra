@@ -534,6 +534,86 @@ describe('WorkItemsStorage', () => {
     expect(await forCard('some-other-card')).toEqual([]);
   });
 
+  it('preserves independently verified enqueue readback while the bound effect is quota-paused', async () => {
+    const storage = await makeStorage();
+    const projectId = 'factory-receipt-quota';
+    const orgId = 'org-receipt-quota';
+    const requestId = '11111111-2222-4333-8444-555555555555';
+    const identity = `external-orchestrator:${requestId}`;
+    const created = await storage.upsert({
+      orgId,
+      userId: 'owner-1',
+      factoryProjectId: projectId,
+      input: { ...input, externalSource: null },
+    });
+    const committed = await storage.commitRuleEvaluation({
+      orgId,
+      factoryProjectId: projectId,
+      workItemId: created.item.id,
+      ingress: { identity, triggerType: 'external-orchestrator.invoke-skill' },
+      configVersion: 'v1',
+      expectedRevision: created.item.revision,
+      actor: { type: 'system', id: 'factory-external-orchestrator' },
+      outcome: { status: 'accepted' },
+      decisions: [
+        {
+          type: 'invokeSkill',
+          role: 'work',
+          skillName: 'factory-plan',
+          idempotencyKey: identity,
+        },
+      ],
+      causalChain: [],
+      now: new Date('2030-01-01T00:00:00Z'),
+    });
+    expect(committed.status).toBe('committed');
+    const initial = await storage.getEnqueueReceipt(orgId, projectId, requestId);
+    expect(initial).toMatchObject({
+      kind: 'found',
+      receipt: { workItemId: created.item.id, decisionStatus: 'pending' },
+    });
+
+    const now = new Date('2030-01-01T00:00:01Z');
+    const claimed = await storage.claimDeferredDecisions({
+      ownerId: 'quota-owner',
+      now,
+      leaseExpiresAt: new Date(now.getTime() + 30_000),
+      limit: 1,
+      decisionFilter: decision => decision.type === 'invokeSkill',
+    });
+    expect(claimed).toHaveLength(1);
+    const paused = await storage.failDeferredDecision({
+      orgId,
+      factoryProjectId: projectId,
+      id: claimed[0]!.id,
+      ownerId: 'quota-owner',
+      now,
+      availableAt: new Date(now.getTime() + 300_000),
+      failureCode: 'run_quota_exhausted',
+      lastError: 'Provider quota exhausted',
+      terminal: false,
+      quotaPaused: true,
+      advanceDeliveryGeneration: true,
+    });
+    expect(paused).toMatchObject({ status: 'quota_paused', quotaPauses: 1 });
+
+    const verified = await storage.getEnqueueReceipt(orgId, projectId, requestId);
+    expect(verified).toMatchObject({
+      kind: 'found',
+      receipt: {
+        projectId,
+        requestId,
+        workItemId: created.item.id,
+        role: 'work',
+        skillName: 'factory-plan',
+        decisionStatus: 'quota_paused',
+        nativeEffectId: claimed[0]!.id,
+      },
+    });
+    expect(await storage.getEnqueueReceipt('other-org', projectId, requestId)).toEqual({ kind: 'missing' });
+    expect(await storage.getEnqueueReceipt(orgId, 'other-project', requestId)).toEqual({ kind: 'missing' });
+  });
+
   it('claims deferred decisions by payload filter, paging past any backlog of filtered-out rows', async () => {
     const storage = await makeStorage();
     const scope = { orgId: 'org1', factoryProjectId: 'p1' };

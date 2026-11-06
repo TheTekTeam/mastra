@@ -121,14 +121,16 @@ function runErrorCode(error: unknown, message: string): FactoryDispatchFailureCo
   }
   const status = httpStatus(error) ?? httpStatus(causeOf(error));
   if (status === 401 || status === 403) return 'run_credentials_unavailable';
-  const providerCall = isProviderCallError(error) || isProviderCallError(causeOf(error));
-  return providerCall && classifyProviderError(error) === 'auth' ? 'run_credentials_unavailable' : 'run_failed';
+  const provider = isProviderCallError(error) ? error : isProviderCallError(causeOf(error)) ? causeOf(error) : null;
+  // A generic 429 is rate limiting, NOT evidence of an exhausted allowance.
+  if (provider && classifyProviderError(provider) === 'quota') return 'run_quota_exhausted';
+  return provider && classifyProviderError(provider) === 'auth' ? 'run_credentials_unavailable' : 'run_failed';
 }
 
 function runErrorFailure(label: string, error: unknown): RunEndedInError {
   const cause = (error instanceof Error ? error.message : String(error ?? '')).trim();
   if (!cause) return new RunEndedInError('run_failed', `${label} ended in error.`);
-  return new RunEndedInError(runErrorCode(error, cause), `${label} ended in error: ${cause}`);
+  return new RunEndedInError(runErrorCode(error, cause), `${label} ended in error: ${cause}`, { cause: error });
 }
 
 // Rescheduling a failure that can never succeed only delays the moment a person sees why.
@@ -469,6 +471,48 @@ function sanitizeDispatchError(error: unknown): string {
 
 function retryAt(now: Date, attempts: number): Date {
   return new Date(now.getTime() + Math.min(1_000 * 2 ** Math.max(0, attempts - 1), MAX_BACKOFF_MS));
+}
+
+// Durable Factory-owned quota wake-up. An advertised Retry-After is respected;
+// absent that evidence, re-probe at bounded 5/15/30-minute intervals. The
+// deterministic spread avoids synchronising many exhausted accounts on restart.
+const QUOTA_CHECK_DELAYS_MS = [5 * 60_000, 15 * 60_000, 30 * 60_000] as const;
+function quotaRetryAfterHeader(headers: Record<string, unknown> | undefined): unknown {
+  if (!headers || typeof headers !== 'object') return undefined;
+  return Object.entries(headers).find(([name]) => name.toLowerCase() === 'retry-after')?.[1];
+}
+function quotaRetryAfterMs(error: unknown, now: Date): number | null {
+  let value: unknown;
+  let cursor = error;
+  for (let depth = 0; depth < 4 && cursor && typeof cursor === 'object'; depth++) {
+    const shape = cursor as {
+      retryAfter?: unknown;
+      responseHeaders?: Record<string, unknown>;
+      headers?: Record<string, unknown>;
+      cause?: unknown;
+    };
+    value = shape.retryAfter ?? quotaRetryAfterHeader(shape.responseHeaders) ?? quotaRetryAfterHeader(shape.headers);
+    if (value !== undefined) break;
+    cursor = shape.cause;
+  }
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const raw = String(value).trim();
+  const seconds = /^\d{1,8}$/.test(raw) ? Number(raw) : NaN;
+  const delay = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(raw) - now.getTime();
+  // Untrusted absurd timestamps must not permanently strand a project.
+  return Number.isFinite(delay) && delay >= 0 && delay <= 30 * 24 * 60 * 60_000 ? delay : null;
+}
+function quotaWakeAt(
+  now: Date,
+  record: Pick<FactoryDeferredDecisionRecord | FactoryPendingStartRecord, 'id' | 'quotaPauses'>,
+  error: unknown,
+): Date {
+  const evidenceMs = quotaRetryAfterMs(error, now);
+  if (evidenceMs !== null) return new Date(now.getTime() + Math.max(60_000, evidenceMs));
+  const nominal = QUOTA_CHECK_DELAYS_MS[Math.min(record.quotaPauses, QUOTA_CHECK_DELAYS_MS.length - 1)] ?? 30 * 60_000;
+  let hash = 5381;
+  for (const char of `${record.id}:${record.quotaPauses}`) hash = ((hash * 33) ^ char.charCodeAt(0)) >>> 0;
+  return new Date(now.getTime() + Math.round(nominal * (0.9 + (hash % 201) / 1000)));
 }
 
 function externalSourceForDecision(decision: Extract<FactoryCommitDecision, { type: 'upsertLinkedWorkItem' }>) {
@@ -830,14 +874,19 @@ export class FactoryDecisionDispatcher {
         return;
       }
       const failureCode = factoryDispatchFailureCode(error);
-      const terminal = isTerminalFailure(record.attempts, failureCode);
+      const quotaPaused = failureCode === 'run_quota_exhausted';
+      // Run completion may outlast its original claim; never schedule from claim time.
+      // The lower bound also tolerates a backwards wall-clock adjustment.
+      const failedAt = new Date(Math.max(Date.now(), now.getTime()));
+      const terminal = !quotaPaused && isTerminalFailure(record.attempts - record.quotaPauses, failureCode);
       const failed = await this.#storage.failDeferredDecision({
         ...leaseIdentity(record, this.#ownerId),
-        now: new Date(),
-        availableAt: retryAt(now, record.attempts),
+        now: failedAt,
+        availableAt: quotaPaused ? quotaWakeAt(failedAt, record, error) : retryAt(failedAt, record.attempts),
         lastError: sanitizeDispatchError(error),
         failureCode,
         terminal,
+        quotaPaused,
         advanceDeliveryGeneration: !executionCompleted,
       });
       if (terminal && failed) await this.#supersedeFailureOnSettledCard(failed);
@@ -1852,13 +1901,20 @@ export class FactoryDecisionDispatcher {
       if (!completed) throw new Error('Factory kickoff lease was lost before completion.');
     } catch (error) {
       const failureCode = factoryDispatchFailureCode(error);
+      // Start relative provider deadlines at the observed failed run end.
+      const failedAt = new Date(Math.max(Date.now(), now.getTime()));
       await this.#storage.failPendingStart({
         ...leaseIdentity(record, this.#ownerId),
-        now: new Date(),
-        availableAt: retryAt(now, record.attempts),
+        now: failedAt,
+        availableAt:
+          failureCode === 'run_quota_exhausted'
+            ? quotaWakeAt(failedAt, record, error)
+            : retryAt(failedAt, record.attempts),
         lastError: sanitizeDispatchError(error),
         failureCode,
-        terminal: isTerminalFailure(record.attempts, failureCode),
+        quotaPaused: failureCode === 'run_quota_exhausted',
+        terminal:
+          failureCode !== 'run_quota_exhausted' && isTerminalFailure(record.attempts - record.quotaPauses, failureCode),
       });
     }
   }

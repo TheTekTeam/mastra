@@ -171,6 +171,7 @@ export type FactoryDispatchStatus =
   | 'superseded'
   | 'leased'
   | 'retry'
+  | 'quota_paused'
   | 'succeeded'
   | 'failed';
 
@@ -195,6 +196,7 @@ const FACTORY_DISPATCH_FAILURE_CODES = [
   'run_configuration_invalid',
   'run_credentials_unavailable',
   'run_user_unauthenticated',
+  'run_quota_exhausted',
   'run_failed',
   'unknown',
 ] as const;
@@ -268,6 +270,7 @@ export interface FactoryDeferredDecisionRecord {
   attempts: number;
   deliveryGeneration: number;
   failureOccurrence: number;
+  quotaPauses: number;
   availableAt: Date;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -424,8 +427,9 @@ export interface FactoryPendingStartRecord {
   bindingId: string;
   kickoffKey: string;
   message: string | null;
-  status: 'pending' | 'leased' | 'retry' | 'sent' | 'failed';
+  status: 'pending' | 'leased' | 'retry' | 'quota_paused' | 'sent' | 'failed';
   attempts: number;
+  quotaPauses: number;
   availableAt: Date;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -461,6 +465,8 @@ export interface FactoryDispatchFailureInput extends FactoryLeaseIdentity {
   lastError: string;
   failureCode: FactoryDispatchFailureCode;
   terminal: boolean;
+  /** A verified provider quota failure parks the effect without spending its ordinary retry budget. */
+  quotaPaused?: boolean;
   advanceDeliveryGeneration?: boolean;
 }
 
@@ -1043,6 +1049,7 @@ const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
       attempts: { type: 'integer' },
       delivery_generation: { type: 'integer', default: 0 },
       failure_occurrence: { type: 'integer', default: 0 },
+      quota_pauses: { type: 'integer', default: 0 },
       available_at: { type: 'timestamp' },
       lease_owner: { type: 'text', nullable: true },
       lease_expires_at: { type: 'timestamp', nullable: true },
@@ -1159,6 +1166,7 @@ const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
       message: { type: 'text', nullable: true },
       status: { type: 'text' },
       attempts: { type: 'integer' },
+      quota_pauses: { type: 'integer', default: 0 },
       available_at: { type: 'timestamp' },
       lease_owner: { type: 'text', nullable: true },
       lease_expires_at: { type: 'timestamp', nullable: true },
@@ -1219,6 +1227,7 @@ function toDeferredDecision(row: GovernanceDbRow): FactoryDeferredDecisionRecord
     attempts: Number(row.attempts),
     deliveryGeneration: Number(row.delivery_generation ?? 0),
     failureOccurrence: Number(row.failure_occurrence ?? 0),
+    quotaPauses: Number(row.quota_pauses ?? 0),
     availableAt: row.available_at as Date,
     leaseOwner: (row.lease_owner as string | null) ?? null,
     leaseExpiresAt: (row.lease_expires_at as Date | null) ?? null,
@@ -1289,6 +1298,7 @@ function toPendingStart(row: GovernanceDbRow): FactoryPendingStartRecord {
     message: (row.message as string | null) ?? null,
     status: row.status as FactoryPendingStartRecord['status'],
     attempts: Number(row.attempts),
+    quotaPauses: Number(row.quota_pauses ?? 0),
     availableAt: row.available_at as Date,
     leaseOwner: (row.lease_owner as string | null) ?? null,
     leaseExpiresAt: (row.lease_expires_at as Date | null) ?? null,
@@ -1430,20 +1440,24 @@ export class WorkItemsStorage extends FactoryStorageDomain {
     const claim = () =>
       this.#withTransaction(async ops => {
         // Bounded candidate window: only rows in claimable/expirable statuses,
-        // oldest first. Terminal rows (sent/succeeded/failed) accumulate over a
+        // earliest available first. Terminal rows (sent/succeeded/failed) accumulate over a
         // deployment's lifetime and must never be scanned per dispatch tick.
-        const where = { status: { in: ['pending', 'retry', 'leased'] } };
+        const where = { status: { in: ['pending', 'retry', 'quota_paused', 'leased'] } };
         const claimed: T[] = [];
         // A filtered claim widens its window past rows it rejects so matching
         // rows queued behind any size of filtered-out backlog stay reachable.
-        // Unfiltered claims read one window: the first claimable rows are the
-        // oldest. Ties on created_at keep the store's insertion order.
+        // Unfiltered claims read one window: sorting by due time prevents many
+        // future quota pauses from starving runnable work for other providers.
+        // Ties on created_at keep insertion order.
         let window = Math.max(input.limit * 5, 50);
         let scanned = 0;
         let exhausted = false;
         do {
           const page = await ops.findMany<GovernanceDbRow>(table, where, {
-            orderBy: [['created_at', 'asc']],
+            orderBy: [
+              ['available_at', 'asc'],
+              ['created_at', 'asc'],
+            ],
             limit: window,
           });
           exhausted = !accept || page.length < window;
@@ -1457,7 +1471,8 @@ export class WorkItemsStorage extends FactoryStorageDomain {
               ? new Date(candidate.lease_expires_at as Date | string).getTime()
               : 0;
             const claimable =
-              (candidate.status === 'pending' || candidate.status === 'retry') && availableAt <= input.now.getTime();
+              (candidate.status === 'pending' || candidate.status === 'retry' || candidate.status === 'quota_paused') &&
+              availableAt <= input.now.getTime();
             const expired = candidate.status === 'leased' && leaseExpiresAt <= input.now.getTime();
             if (!claimable && !expired) continue;
             if (accept && !accept(candidate)) continue;
@@ -1468,12 +1483,15 @@ export class WorkItemsStorage extends FactoryStorageDomain {
                 ? new Date(current.lease_expires_at as Date | string).getTime()
                 : 0;
               const currentClaimable =
-                (current.status === 'pending' || current.status === 'retry') && currentAvailable <= input.now.getTime();
+                (current.status === 'pending' || current.status === 'retry' || current.status === 'quota_paused') &&
+                currentAvailable <= input.now.getTime();
               const currentExpired = current.status === 'leased' && currentExpiry <= input.now.getTime();
               if (!currentClaimable && !currentExpired) return null;
               didClaim = true;
               return {
                 status: 'leased',
+                // Monotonic total attempts retain lease/restart history. The dispatcher
+                // subtracts quota pauses when enforcing the engineering failure budget.
                 attempts: Number(current.attempts) + 1,
                 lease_owner: input.ownerId,
                 lease_expires_at: input.leaseExpiresAt,
@@ -1546,7 +1564,8 @@ export class WorkItemsStorage extends FactoryStorageDomain {
         if (current.status !== 'leased' || current.lease_owner !== input.ownerId) return null;
         failed = true;
         return {
-          status: input.terminal ? 'failed' : 'retry',
+          status: input.quotaPaused ? 'quota_paused' : input.terminal ? 'failed' : 'retry',
+          ...(input.quotaPaused ? { quota_pauses: Number(current.quota_pauses ?? 0) + 1 } : {}),
           ...(table === 'factory_deferred_decisions' && !input.terminal && input.advanceDeliveryGeneration !== false
             ? { delivery_generation: Number(current.delivery_generation ?? 0) + 1 }
             : {}),
@@ -1972,6 +1991,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
                   ? {
                       status: 'retry',
                       attempts: 0,
+                      quota_pauses: 0,
                       available_at: input.now,
                       lease_owner: null,
                       lease_expires_at: null,
@@ -2272,7 +2292,15 @@ export class WorkItemsStorage extends FactoryStorageDomain {
       const effect = effects[0]!;
       const effectActor = effect.actor as Record<string, unknown> | null;
       const statuses: readonly string[] = [
-        'pending', 'proposed', 'dismissed', 'superseded', 'leased', 'retry', 'succeeded', 'failed',
+        'pending',
+        'proposed',
+        'dismissed',
+        'superseded',
+        'leased',
+        'retry',
+        'quota_paused',
+        'succeeded',
+        'failed',
       ];
       const effectDecision = effect.decision;
       if (
@@ -2634,6 +2662,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           status: 'proposed',
           // The claim that parked it spent no effect, so it costs no attempt.
           attempts: 0,
+          quota_pauses: 0,
           lease_owner: null,
           lease_expires_at: null,
           updated_at: now,
@@ -2670,6 +2699,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           return {
             status: 'pending',
             attempts: 0,
+            quota_pauses: 0,
             available_at: now,
             approved_at: now,
             approved_by: approvedBy ?? null,
@@ -2897,6 +2927,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           return {
             status: 'retry',
             attempts: 0,
+            quota_pauses: 0,
             delivery_generation: Number(current.delivery_generation ?? 0) + 1,
             available_at: now,
             lease_owner: null,
