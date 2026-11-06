@@ -1,12 +1,19 @@
 import type { ConnectionOptions } from 'node:tls';
 import type { CreateIndexOptions, RetentionConfig } from '@mastra/core/storage';
 import type { ClientConfig, Pool, PoolConfig } from 'pg';
+import type { PgThreadPersistenceGuardV1 } from '../storage/domains/memory/thread-persistence-guard';
 
 /**
  * Base configuration options shared across PostgreSQL configs.
  */
 export interface PostgresBaseConfig {
   id: string;
+  /**
+   * Optional v1 transaction-bound PG thread mutation guard. Default is OFF.
+   * This does not enable Factory project adoption or any execution permission;
+   * a future server-only origin policy and Core pre-effect gate are mandatory.
+   */
+  threadPersistenceGuard?: PgThreadPersistenceGuardV1;
   schemaName?: string;
   /**
    * Identifies the database and schema this store's Knowledge tables live in. `Mastra` rejects two Knowledge
