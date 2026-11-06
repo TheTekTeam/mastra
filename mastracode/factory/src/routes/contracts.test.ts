@@ -24,6 +24,7 @@ import {
   updateProjectBodySchema,
 } from './contracts.js';
 import { ProjectRoutes } from './projects.js';
+import { buildProjectAppEvidenceRoutes } from './source-control-app-evidence.js';
 import { WorkItemRoutes } from './work-items.js';
 
 const projectId = '11111111-1111-4111-8111-111111111111';
@@ -61,7 +62,13 @@ function registeredFactoryRoutes() {
     workItems,
     configVersion: 'test',
   } as never);
-  return [...projects, ...work, ...attention, ...automationRuns];
+  const projectAppEvidence = buildProjectAppEvidenceRoutes({
+    auth: {},
+    projects: {},
+    sourceControl: {},
+    github: {},
+  } as never);
+  return [...projects, ...work, ...attention, ...automationRuns, ...projectAppEvidence];
 }
 
 describe('Factory route contracts', () => {
