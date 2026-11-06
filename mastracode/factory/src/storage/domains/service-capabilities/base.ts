@@ -9,6 +9,12 @@ import type { CollectionSchema, FactoryStorageOps } from '@mastra/core/storage';
 export const SERVICE_CAPABILITY_ACTIONS = ['workItem.enqueue', 'projectAutomation.set'] as const;
 export type ServiceCapabilityAction = (typeof SERVICE_CAPABILITY_ACTIONS)[number];
 export type ServiceCapabilityOperation = 'issue' | 'revoke';
+export interface ServiceEnqueueProfile {
+  workItemId: string;
+  role: string;
+  skillName: string;
+  argumentsDigest: string;
+}
 
 export interface ServiceCapabilityGrant {
   id: string;
@@ -17,6 +23,7 @@ export interface ServiceCapabilityGrant {
   projectId: string;
   actions: ServiceCapabilityAction[];
   workItemIds: string[];
+  enqueueProfiles: ServiceEnqueueProfile[];
   /** Keyed SHA-256 digest; never return this field from an HTTP read response. */
   tokenHash: string;
   issuedByUserId: string;
@@ -37,7 +44,7 @@ export interface ServiceCapabilityAuditEvent {
   action: string;
   requestId: string | null;
   bodyFingerprint: string | null;
-  outcome: 'admitted' | 'denied' | 'succeeded' | 'rejected' | 'effect_unverified' | 'issued' | 'revoked';
+  outcome: 'admitted' | 'effect_started' | 'denied' | 'succeeded' | 'rejected' | 'effect_unverified' | 'issued' | 'revoked';
   reason: string | null;
   occurredAt: Date;
 }
@@ -51,6 +58,7 @@ export const SERVICE_CAPABILITY_GRANTS_SCHEMA: CollectionSchema = {
     project_id: { type: 'text' },
     actions: { type: 'json' },
     work_item_ids: { type: 'json' },
+    enqueue_profiles: { type: 'json' },
     token_hash: { type: 'text' },
     issued_by_user_id: { type: 'text' },
     issued_at: { type: 'timestamp' },
@@ -60,6 +68,30 @@ export const SERVICE_CAPABILITY_GRANTS_SCHEMA: CollectionSchema = {
   },
   uniqueIndexes: [{ name: 'service_capability_grant_token_unique', columns: ['token_hash'] }],
   indexes: [{ name: 'service_capability_grant_project', columns: ['org_id', 'project_id', 'issued_at'] }],
+};
+
+export const SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA: CollectionSchema = {
+  name: 'service_capability_effect_leases',
+  columns: {
+    id: { type: 'uuid-pk' },
+    grant_id: { type: 'text' },
+    grant_version: { type: 'integer' },
+    org_id: { type: 'text' },
+    project_id: { type: 'text' },
+    work_item_id: { type: 'text', nullable: true },
+    action: { type: 'text' },
+    request_id: { type: 'text' },
+    body_fingerprint: { type: 'text' },
+    admitted_at: { type: 'timestamp' },
+    start_by: { type: 'timestamp' },
+    started_at: { type: 'timestamp', nullable: true },
+    settled_at: { type: 'timestamp', nullable: true },
+    outcome: { type: 'text', nullable: true },
+  },
+  indexes: [
+    { name: 'service_capability_leases_project', columns: ['org_id', 'project_id', 'admitted_at'] },
+    { name: 'service_capability_leases_request', columns: ['grant_id', 'request_id'] },
+  ],
 };
 
 export const SERVICE_CAPABILITY_CONSENTS_SCHEMA: CollectionSchema = {
@@ -111,6 +143,7 @@ interface GrantDbRow extends Record<string, unknown> {
   project_id: string;
   actions: ServiceCapabilityAction[];
   work_item_ids: string[];
+  enqueue_profiles: ServiceEnqueueProfile[];
   token_hash: string;
   issued_by_user_id: string;
   issued_at: Date;
@@ -131,6 +164,47 @@ interface ConsentDbRow extends Record<string, unknown> {
   expires_at: Date;
   consumed_at: Date | null;
 }
+interface LeaseDbRow extends Record<string, unknown> {
+  id: string;
+  grant_id: string;
+  grant_version: number;
+  org_id: string;
+  project_id: string;
+  work_item_id: string | null;
+  action: ServiceCapabilityAction;
+  request_id: string;
+  body_fingerprint: string;
+  admitted_at: Date;
+  start_by: Date;
+  started_at: Date | null;
+  settled_at: Date | null;
+  outcome: string | null;
+}
+export interface ServiceCapabilityEffectLease {
+  id: string;
+  grantId: string;
+  grantVersion: number;
+  orgId: string;
+  projectId: string;
+  action: ServiceCapabilityAction;
+  requestId: string;
+  workItemId: string | null;
+  admittedAt: Date;
+  startBy: Date;
+  startedAt: Date | null;
+  settledAt: Date | null;
+  outcome: string | null;
+}
+function toLease(row: LeaseDbRow): ServiceCapabilityEffectLease {
+  return {
+    id: row.id, grantId: row.grant_id, grantVersion: row.grant_version,
+    orgId: row.org_id, projectId: row.project_id, workItemId: row.work_item_id,
+    action: row.action, requestId: row.request_id, admittedAt: row.admitted_at,
+    startBy: row.start_by, startedAt: row.started_at, settledAt: row.settled_at,
+    outcome: row.outcome,
+  };
+}
+
 interface AuditDbRow extends Record<string, unknown> {
   id: string;
   grant_id: string | null;
@@ -155,6 +229,7 @@ function toGrant(row: GrantDbRow): ServiceCapabilityGrant {
     projectId: row.project_id,
     actions: row.actions,
     workItemIds: row.work_item_ids,
+    enqueueProfiles: row.enqueue_profiles,
     tokenHash: row.token_hash,
     issuedByUserId: row.issued_by_user_id,
     issuedAt: row.issued_at,
@@ -206,6 +281,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
   async dangerouslyClearAll(): Promise<void> {
     await this.storage.withTransaction(async ops => {
       await ops.deleteMany('service_capability_audit', {});
+      await ops.deleteMany('service_capability_effect_leases', {});
       await ops.deleteMany('service_capability_consents', {});
       await ops.deleteMany('service_capability_grants', {});
     });
@@ -216,6 +292,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
       SERVICE_CAPABILITY_GRANTS_SCHEMA,
       SERVICE_CAPABILITY_CONSENTS_SCHEMA,
       SERVICE_CAPABILITY_AUDIT_SCHEMA,
+      SERVICE_CAPABILITY_EFFECT_LEASES_SCHEMA,
     ]);
   }
 
@@ -233,8 +310,11 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     projectAllowed: boolean;
     requestId: string;
     bodyFingerprint: string;
+    role?: string;
+    skillName?: string;
+    argumentsDigest?: string;
     now?: Date;
-  }): Promise<ServiceCapabilityGrant | null> {
+  }): Promise<{ grant: ServiceCapabilityGrant; lease: ServiceCapabilityEffectLease } | null> {
     return this.storage.withTransaction(async ops => {
       // Use the transactional admission instant, not a stale preflight time.
       const admissionNow = input.now ?? new Date();
@@ -251,11 +331,34 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         row &&
         projectExists &&
         row.revoked_at === null &&
+        row.issued_at.getTime() <= admissionNow.getTime() &&
         row.expires_at.getTime() > admissionNow.getTime() &&
         row.actions.includes(input.action) &&
         (input.action !== 'workItem.enqueue' ||
-          (Boolean(input.workItemId) && row.work_item_ids.includes(input.workItemId!))),
+          (Boolean(input.workItemId) &&
+           row.enqueue_profiles.some(profile =>
+             profile.workItemId === input.workItemId &&
+             profile.role === input.role &&
+             profile.skillName === input.skillName &&
+             profile.argumentsDigest === input.argumentsDigest))),
       );
+      const lease = allowed && row
+        ? await ops.insertOne<LeaseDbRow>('service_capability_effect_leases', {
+            grant_id: row.id,
+            grant_version: row.version,
+            org_id: row.org_id,
+            project_id: row.project_id,
+            work_item_id: input.workItemId,
+            action: input.action,
+            request_id: input.requestId,
+            body_fingerprint: input.bodyFingerprint,
+            admitted_at: admissionNow,
+            start_by: new Date(admissionNow.getTime() + 15_000),
+            started_at: null,
+            settled_at: null,
+            outcome: null,
+          })
+        : null;
       await this.#recordWithin(ops, {
         grantId: row?.id ?? null,
         orgId: row?.org_id ?? null,
@@ -270,8 +373,97 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         reason: allowed ? null : 'invalid_or_out_of_scope',
         occurredAt: admissionNow,
       });
-      return allowed && row ? toGrant(row) : null;
+      return allowed && row && lease ? { grant: toGrant(row), lease: toLease(lease) } : null;
     });
+  }
+
+  /** A revocation fences new native starts. Issued in-flight leases may finish later. */
+  async beginEffect(input: {
+    leaseId: string;
+    grantId: string;
+    grantVersion: number;
+    orgId: string;
+    projectId: string;
+    action: ServiceCapabilityAction;
+    requestId: string;
+    bodyFingerprint: string;
+    now?: Date;
+  }): Promise<boolean> {
+    return this.storage.withTransaction(async ops => {
+      const now = input.now ?? new Date();
+      const lease = await ops.findOne<LeaseDbRow>('service_capability_effect_leases', {
+        id: input.leaseId, grant_id: input.grantId, grant_version: input.grantVersion,
+        org_id: input.orgId, project_id: input.projectId, action: input.action,
+        request_id: input.requestId, body_fingerprint: input.bodyFingerprint,
+      });
+      if (!lease || lease.started_at || lease.settled_at || lease.start_by.getTime() <= now.getTime()) return false;
+      const grant = await ops.findOne<GrantDbRow>('service_capability_grants', {
+        id: input.grantId, org_id: input.orgId, project_id: input.projectId,
+      });
+      if (!grant || grant.version !== input.grantVersion ||
+          grant.revoked_at || grant.issued_at.getTime() > now.getTime() ||
+          lease.admitted_at.getTime() > now.getTime() ||
+          grant.expires_at.getTime() <= now.getTime()) return false;
+      let started = false;
+      await ops.updateAtomic<LeaseDbRow>('service_capability_effect_leases', { id: lease.id }, current => {
+        if (current.started_at || current.settled_at || current.start_by.getTime() <= now.getTime()) return null;
+        started = true;
+        return { started_at: now };
+      });
+      if (!started) return false;
+      await this.#recordWithin(ops, {
+        grantId: lease.grant_id, orgId: lease.org_id, projectId: lease.project_id,
+        workItemId: lease.work_item_id, principalId: grant.principal_id, actorId: grant.principal_id,
+        action: lease.action, requestId: lease.request_id,
+        bodyFingerprint: lease.body_fingerprint, outcome: 'effect_started',
+        reason: null, occurredAt: now,
+      });
+      return true;
+    });
+  }
+
+  /** Settle one immutable lease and journal its outcome in the same transaction. */
+  async finishEffect(input: {
+    leaseId: string;
+    grantId: string;
+    outcome: 'succeeded' | 'rejected' | 'effect_unverified';
+    reason: string | null;
+    now?: Date;
+  }): Promise<void> {
+    await this.storage.withTransaction(async ops => {
+      const now = input.now ?? new Date();
+      const row = await ops.findOne<LeaseDbRow>('service_capability_effect_leases', {
+        id: input.leaseId, grant_id: input.grantId,
+      });
+      if (!row || row.settled_at || (input.outcome === 'succeeded' && !row.started_at)) {
+        throw new Error('Service effect lease missing, already settled or never started');
+      }
+      let settled = false;
+      await ops.updateAtomic<LeaseDbRow>('service_capability_effect_leases', { id: row.id }, current => {
+        if (current.settled_at) return null;
+        settled = true;
+        return { settled_at: now, outcome: input.outcome };
+      });
+      if (!settled) throw new Error('Service effect lease settlement lost concurrent race');
+      const grant = await ops.findOne<GrantDbRow>('service_capability_grants', {
+        id: row.grant_id, org_id: row.org_id, project_id: row.project_id,
+      });
+      await this.#recordWithin(ops, {
+        grantId: row.grant_id, orgId: row.org_id, projectId: row.project_id,
+        workItemId: row.work_item_id, principalId: grant?.principal_id ?? null,
+        actorId: grant?.principal_id ?? null, action: row.action, requestId: row.request_id,
+        bodyFingerprint: row.body_fingerprint, outcome: input.outcome,
+        reason: input.reason, occurredAt: now,
+      });
+    });
+  }
+
+  /** No automatic lease replay. An operator must reconcile unsettled effects after restart. */
+  async listUnsettledEffectLeases(input: { orgId: string; projectId: string }): Promise<ServiceCapabilityEffectLease[]> {
+    const rows = await this.ops.findMany<LeaseDbRow>('service_capability_effect_leases', {
+      org_id: input.orgId, project_id: input.projectId, settled_at: null,
+    }, { orderBy: [['admitted_at', 'asc']] });
+    return rows.map(toLease);
   }
 
   /** The caller supplies only a keyed digest, never a raw token. */
@@ -363,6 +555,7 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
         project_id: grant.projectId,
         actions: grant.actions,
         work_item_ids: grant.workItemIds,
+        enqueue_profiles: grant.enqueueProfiles,
         token_hash: grant.tokenHash,
         issued_by_user_id: grant.issuedByUserId,
         issued_at: grant.issuedAt,
