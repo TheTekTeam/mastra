@@ -291,12 +291,12 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             causalChain: [],
             now,
             });
-          } catch {
+          } catch (cause) {
             if (serviceAdmission && capabilities) {
               try { await capabilities.finish(serviceAdmission, 'effect_unverified', 'native_commit_exception'); } catch {}
               return serviceOutcomeUnavailable();
             }
-            throw new Error('Factory native enqueue commit failed');
+            throw cause;
           }
 
           if (commit.status === 'missing') {
