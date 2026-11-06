@@ -159,8 +159,9 @@ describe('explicit Factory service grants: human administration and native mutat
       autoApprovePlans: false,
     };
     expect((await s.request(s.base + '/automation', 'PATCH', casBody, {}, member)).status).toBe(403);
+    const casRequestId = randomUUID();
     const cas = await s.request(s.base + '/automation', 'PATCH', casBody, {
-      authorization, 'x-factory-request-id': randomUUID(), 'x-mastra-organization-id': 'other-org',
+      authorization, 'x-factory-request-id': casRequestId, 'x-mastra-organization-id': 'other-org',
     }, null);
     expect(cas.status).toBe(200);
     expect((await cas.json() as { project: { automationRevision: number } }).project.automationRevision)
@@ -169,6 +170,16 @@ describe('explicit Factory service grants: human administration and native mutat
       authorization, 'x-factory-request-id': randomUUID(),
     }, null);
     expect(stale.status).toBe(409);
+    const reusedIntent = await s.request(s.base + '/automation', 'PATCH', {
+      expectedAutomationRevision: old.automationRevision + 1,
+      expectedAutoRunEnabled: true, expectedAutoApprovePlans: false,
+      autoRunEnabled: false, autoApprovePlans: true,
+    }, { authorization, 'x-factory-request-id': casRequestId }, null);
+    // Native CAS would succeed, but a previous service requestId must bind to
+    // its original immutable body; no new effect or implicit replay is allowed.
+    expect(reusedIntent.status).toBe(403);
+    expect((await s.seed.projects.get({ orgId: admin.organizationId, id: s.project.id }))?.automationRevision)
+      .toBe(old.automationRevision + 1);
 
     const enqueuePath = s.base + '/work-items/' + s.item.id + '/automation-runs';
     const run = {
@@ -179,7 +190,7 @@ describe('explicit Factory service grants: human administration and native mutat
     const result = await s.request(enqueuePath, 'POST', run, { authorization }, null);
     expect(result.status).toBe(202);
     const replay = await s.request(enqueuePath, 'POST', run, { authorization }, null);
-    expect(replay.status).toBe(200);
+    expect(replay.status).toBe(403);
     expect((await s.seed.workItems.listDeferredDecisions(admin.organizationId, s.project.id))).toHaveLength(1);
     expect((await s.request(enqueuePath, 'POST', { ...run, skillName: 'different' },
       { authorization }, null)).status).toBe(409);
