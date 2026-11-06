@@ -24,6 +24,7 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@clack/prompts": "^1.7.0",
+    "@mastra/auth-better-auth": "link:../../auth/better-auth",
     "@mastra/auth-workos": "link:../../auth/workos",
     "@mastra/code-sdk": "link:../sdk",
     "@mastra/core": "link:../../packages/core",

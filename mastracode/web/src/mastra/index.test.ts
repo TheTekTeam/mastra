@@ -39,6 +39,7 @@ describe('platform entry (src/mastra/index.ts)', () => {
       'WORKOS_API_KEY',
       'WORKOS_CLIENT_ID',
       'WORKOS_COOKIE_PASSWORD',
+      'BETTER_AUTH_SECRET',
       'MASTRA_SHARED_API_URL',
       'MASTRA_PLATFORM_SECRET_KEY',
       'MASTRA_PLATFORM_ACCESS_TOKEN',
@@ -507,6 +508,54 @@ describe('platform entry (src/mastra/index.ts)', () => {
         expect(mod.mastra.getAgentController('code')?.getChannels()).toBeDefined();
       },
     );
+  });
+
+  describe('self-hosted Better Auth operator sign-in', () => {
+    // A real 0.25 production upgrade lost this provider selection, so the
+    // installed MCP operator received HTTP 404 from /auth/api/sign-in/email.
+    it('mounts native email/password sign-in when only BETTER_AUTH_SECRET is configured', { timeout: 60_000 }, async () => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'disposable-test-only-secret-at-least-32-characters');
+      const mod = await import('./index.js');
+      const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
+      expect(paths).toContain('/auth/api/*');
+      expect(factoryConfigs.at(-1)?.auth?.constructor.name).toBe('MastraAuthBetterAuth');
+    });
+
+    it('does not turn on Better Auth when the secret is blank', { timeout: 60_000 }, async () => {
+      vi.stubEnv('BETTER_AUTH_SECRET', '   ');
+      const mod = await import('./index.js');
+      const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
+      expect(paths).not.toContain('/auth/api/*');
+    });
+
+    it('respects explicit platform identity deferral even with a Better Auth secret', { timeout: 60_000 }, async () => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'disposable-test-only-secret-at-least-32-characters');
+      vi.stubEnv('MASTRA_SHARED_API_URL', 'https://shared.example.com/v1');
+      const mod = await import('./index.js');
+      const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
+      expect(paths).not.toContain('/auth/api/*');
+    });
+
+    it('keeps WorkOS ahead of Better Auth when both are configured', { timeout: 60_000 }, async () => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'disposable-test-only-secret-at-least-32-characters');
+      vi.stubEnv('WORKOS_API_KEY', 'sk_test_fake');
+      vi.stubEnv('WORKOS_CLIENT_ID', 'client_fake');
+      vi.stubEnv('WORKOS_COOKIE_PASSWORD', 'a-replica-stable-secret-of-32-plus-chars');
+      vi.stubEnv('MASTRACODE_PUBLIC_URL', 'http://localhost:5873');
+      const mod = await import('./index.js');
+      const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
+      expect(paths).not.toContain('/auth/api/*');
+      expect(factoryConfigs.at(-1)?.auth?.constructor.name).toBe('MastraAuthWorkos');
+    });
+
+    it('honours explicit authentication disablement even with a Better Auth secret', { timeout: 60_000 }, async () => {
+      vi.stubEnv('BETTER_AUTH_SECRET', 'disposable-test-only-secret-at-least-32-characters');
+      vi.stubEnv('MASTRACODE_AUTH_DISABLED', '1');
+      const mod = await import('./index.js');
+      const paths = (mod.mastra.getServer()?.apiRoutes ?? []).map(route => route.path);
+      expect(paths).not.toContain('/auth/api/*');
+      expect(factoryConfigs.at(-1)?.auth).toBeNull();
+    });
   });
 
   describe('WorkOS auth env group', () => {

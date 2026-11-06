@@ -27,6 +27,7 @@ import { E2BFactorySandbox } from '@mastra/e2b';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
+import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -146,7 +147,9 @@ if (redisUrl) {
 //      compute/integration credentials (sandboxes, GitHub/Linear slots), not
 //      identity signals — platform compute plus self-managed sign-in is a
 //      supported combination.
-//   4. Nothing configured — leave undefined and MastraFactory installs its
+//   4. BETTER_AUTH_SECRET — preserve the existing self-hosted Better Auth
+//      email/password sign-in for operator sessions when WorkOS is absent.
+//   5. Nothing configured — leave undefined and MastraFactory installs its
 //      platform-backed default provider.
 const authDisabled = process.env.MASTRACODE_AUTH_DISABLED === '1';
 const workosConfigured = Boolean(process.env.WORKOS_API_KEY?.trim() && process.env.WORKOS_CLIENT_ID?.trim());
@@ -162,6 +165,9 @@ if (authDisabled) {
   }
 } else if (workosConfigured) {
   auth = new MastraAuthWorkos({ fetchMemberships: true });
+} else if (process.env.BETTER_AUTH_SECRET?.trim()) {
+  // Preserve the established self-hosted operator login when upgrading Factory.
+  auth = new MastraAuthBetterAuth({ secret: process.env.BETTER_AUTH_SECRET, signUpEnabled: true });
 }
 const secretEncryption = auth === null ? undefined : credentialEncryption();
 

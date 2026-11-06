@@ -14,6 +14,10 @@ on:
       - ready_for_review
     paths:
       - 'mastracode/factory/**'
+      - 'mastracode/web/src/mastra/index.ts'
+      - 'mastracode/web/src/mastra/index.test.ts'
+      - 'mastracode/web/package.json'
+      - 'mastracode/web/pnpm-lock.yaml'
       - 'packages/cli/src/commands/api/factory-route-metadata.generated.ts'
       - '.changeset/**'
       - '.github/workflows/factory-0.25-quality.yml'
@@ -64,11 +68,21 @@ jobs:
 
       - name: Install frozen Factory dependency closure
         timeout-minutes: 12
-        run: pnpm install --frozen-lockfile --filter '@mastra/factory...' --ignore-scripts
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts \
+            --filter '@mastra/factory...' \
+            --filter '@mastra/auth-better-auth...' \
+            --filter '@mastra/auth-workos...' \
+            --filter '@mastra/e2b...' \
+            --filter '@mastra/redis-streams...' \
+            --filter '@mastra/pg...' \
+            --filter '@mastra/libsql...' \
+            --filter '@mastra/platform-workspace...' \
+            --filter '@mastra/code-sdk...'
 
       - name: Build Factory dependency graph
         timeout-minutes: 22
-        run: pnpm turbo build --filter='@mastra/factory^...' --concurrency=2
+        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/auth-better-auth...' --concurrency=2
 
       - name: Build Factory package
         timeout-minutes: 8
@@ -105,3 +119,11 @@ jobs:
             src/rules/dispatcher.test.ts \
             src/rules/dispatch-errors.test.ts \
             --reporter=dot --maxWorkers=1
+
+      - name: Verify self-hosted Better Auth operator sign-in composition
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          pnpm --dir mastracode/web install --frozen-lockfile --ignore-scripts
+          pnpm --dir mastracode/web run prebuild
+          pnpm --dir mastracode/web exec vitest run src/mastra/index.test.ts --reporter=dot --maxWorkers=1
