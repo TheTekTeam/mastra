@@ -86,6 +86,23 @@ export const FACTORY_API_ROUTE_METADATA = {
       "kind": "single"
     }
   },
+  "GET /web/factory/projects/:id/automation-runs/:requestId": {
+    "contractKey": "automationRunReceipt",
+    "method": "GET",
+    "path": "/web/factory/projects/:id/automation-runs/:requestId",
+    "description": "Read the durable identity of an external enqueue without starting or retrying work",
+    "pathParams": [
+      "id",
+      "requestId"
+    ],
+    "queryParams": [],
+    "bodyParams": [],
+    "hasQuery": false,
+    "hasBody": false,
+    "responseShape": {
+      "kind": "single"
+    }
+  },
   "GET /web/factory/projects/:id/boards": {
     "contractKey": "boardCatalog",
     "method": "GET",
@@ -245,6 +262,28 @@ export const FACTORY_API_ROUTE_METADATA = {
       "name",
       "reviewTestChecksEnabled",
       "selfReviewEnabled"
+    ],
+    "hasQuery": false,
+    "hasBody": true,
+    "responseShape": {
+      "kind": "single"
+    }
+  },
+  "PATCH /web/factory/projects/:id/automation": {
+    "contractKey": "projectAutomationCompareAndSet",
+    "method": "PATCH",
+    "path": "/web/factory/projects/:id/automation",
+    "description": "Atomically compare and set both Factory automation switches (organization admin only)",
+    "pathParams": [
+      "id"
+    ],
+    "queryParams": [],
+    "bodyParams": [
+      "autoApprovePlans",
+      "autoRunEnabled",
+      "expectedAutoApprovePlans",
+      "expectedAutoRunEnabled",
+      "expectedAutomationRevision"
     ],
     "hasQuery": false,
     "hasBody": true,
@@ -807,6 +846,101 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
         "kinds",
         "hasMore"
       ]
+    }
+  },
+  "GET /web/factory/projects/:id/automation-runs/:requestId": {
+    "path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "requestId": {
+          "$ref": "#/$defs/__schema0"
+        }
+      },
+      "required": [
+        "id",
+        "requestId"
+      ],
+      "$defs": {
+        "__schema0": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
+    },
+    "response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "projectId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "requestId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "workItemId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "triage",
+            "plan",
+            "work",
+            "review"
+          ]
+        },
+        "skillName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "argumentsSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "nativeEffectId": {
+          "$ref": "#/$defs/__schema0"
+        },
+        "decisionStatus": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "proposed",
+            "dismissed",
+            "superseded",
+            "leased",
+            "retry",
+            "succeeded",
+            "failed"
+          ]
+        }
+      },
+      "required": [
+        "projectId",
+        "requestId",
+        "workItemId",
+        "role",
+        "skillName",
+        "argumentsSha256",
+        "expectedRevision",
+        "nativeEffectId",
+        "decisionStatus"
+      ],
+      "$defs": {
+        "__schema0": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      }
     }
   },
   "GET /web/factory/projects/:id/boards": {
@@ -1612,6 +1746,68 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
           "type": "boolean"
         }
       }
+    },
+    "response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "project": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {}
+        }
+      },
+      "required": [
+        "project"
+      ]
+    }
+  },
+  "PATCH /web/factory/projects/:id/automation": {
+    "path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "body": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "expectedAutomationRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "expectedAutoRunEnabled": {
+          "type": "boolean"
+        },
+        "expectedAutoApprovePlans": {
+          "type": "boolean"
+        },
+        "autoRunEnabled": {
+          "type": "boolean"
+        },
+        "autoApprovePlans": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "expectedAutomationRevision",
+        "expectedAutoRunEnabled",
+        "expectedAutoApprovePlans",
+        "autoRunEnabled",
+        "autoApprovePlans"
+      ],
+      "additionalProperties": false
     },
     "response": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -3256,6 +3452,7 @@ export const FACTORY_API_ROUTE_CATALOG = {
   "projectList": "GET /web/factory/projects",
   "projectGet": "GET /web/factory/projects/:id",
   "attentionList": "GET /web/factory/projects/:id/attention",
+  "automationRunReceipt": "GET /web/factory/projects/:id/automation-runs/:requestId",
   "boardCatalog": "GET /web/factory/projects/:id/boards",
   "decisionList": "GET /web/factory/projects/:id/decisions",
   "projectEnvironmentGet": "GET /web/factory/projects/:id/environment",
@@ -3265,6 +3462,7 @@ export const FACTORY_API_ROUTE_CATALOG = {
   "metricsGet": "GET /web/factory/projects/:id/metrics",
   "workItemList": "GET /web/factory/projects/:id/work-items",
   "projectUpdate": "PATCH /web/factory/projects/:id",
+  "projectAutomationCompareAndSet": "PATCH /web/factory/projects/:id/automation",
   "projectEnvironmentUpdate": "PATCH /web/factory/projects/:id/environment",
   "workItemUpdate": "PATCH /web/factory/work-items/:id",
   "projectCreate": "POST /web/factory/projects",
