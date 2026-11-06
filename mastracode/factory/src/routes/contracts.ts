@@ -70,6 +70,17 @@ export const updateProjectBodySchema = z
   })
   .refine(input => Object.keys(input).length > 0, { message: 'At least one project field is required' });
 
+/** Atomic opt-in handover requires the whole previous pair and a monotonic revision. */
+export const compareAndSetProjectAutomationBodySchema = z
+  .object({
+    expectedAutomationRevision: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+    expectedAutoRunEnabled: z.boolean(),
+    expectedAutoApprovePlans: z.boolean(),
+    autoRunEnabled: z.boolean(),
+    autoApprovePlans: z.boolean(),
+  })
+  .strict();
+
 const environmentRepositorySchema = z.object({
   projectRepositoryId: z.string(),
   connectionId: z.string(),
@@ -494,6 +505,14 @@ export const FACTORY_ROUTE_CONTRACTS = {
     description: 'Update a Factory project',
     pathSchema: projectPathSchema,
     bodySchema: updateProjectBodySchema,
+    responseSchema: projectResponseSchema,
+  },
+  projectAutomationCompareAndSet: {
+    method: 'PATCH',
+    path: '/web/factory/projects/:id/automation',
+    description: 'Atomically compare and set both Factory automation switches (organization admin only)',
+    pathSchema: projectPathSchema,
+    bodySchema: compareAndSetProjectAutomationBodySchema,
     responseSchema: projectResponseSchema,
   },
   projectEnvironmentGet: {

@@ -39,6 +39,8 @@ export interface FactoryProject {
   autoRunEnabled: boolean;
   /** Whether the Factory answers a run's plan itself instead of waiting for a person. */
   autoApprovePlans: boolean;
+  /** Monotonic fencing version for both automation toggles; unlike updatedAt, resists ABA. */
+  automationRevision: number;
   /** Workspace root in the sandbox; linked repositories are checked out beneath it. */
   sandboxWorkingDirectory: string | null;
   /** Provider settings document validated by the configured FactorySandbox. Only keys the user set. */
@@ -123,6 +125,7 @@ export const FACTORY_PROJECTS_SCHEMA: CollectionSchema = {
     slack_work_items_enabled: { type: 'boolean', default: false },
     auto_run_enabled: { type: 'boolean', default: false },
     auto_approve_plans: { type: 'boolean', default: false },
+    automation_revision: { type: 'integer', default: 0 },
     sandbox_working_directory: { type: 'text', nullable: true },
     sandbox_settings: { type: 'json', nullable: true },
     workspace_setup_command: { type: 'text', nullable: true },
@@ -159,6 +162,7 @@ interface FactoryProjectDbRow extends Record<string, unknown> {
   default_thinking_level: string | null;
   auto_run_enabled: boolean;
   auto_approve_plans: boolean;
+  automation_revision: number;
   sandbox_working_directory: string | null;
   sandbox_settings: Record<string, unknown> | null;
   workspace_setup_command: string | null;
@@ -195,6 +199,7 @@ function toFactoryProject(row: FactoryProjectDbRow): FactoryProject {
       : DEFAULT_THINKING_LEVEL,
     autoRunEnabled: row.auto_run_enabled,
     autoApprovePlans: row.auto_approve_plans ?? false,
+    automationRevision: row.automation_revision,
     sandboxWorkingDirectory: row.sandbox_working_directory ?? null,
     sandboxSettings: row.sandbox_settings ?? null,
     workspaceSetupCommand: row.workspace_setup_command ?? null,
@@ -251,6 +256,7 @@ export class FactoryProjectsStorage extends FactoryStorageDomain {
       model_scope: input.modelScope ?? 'hybrid',
       auto_run_enabled: false,
       auto_approve_plans: false,
+      automation_revision: 0,
       created_at: now,
       updated_at: now,
     });
@@ -301,7 +307,14 @@ export class FactoryProjectsStorage extends FactoryStorageDomain {
       ops.updateAtomic<FactoryProjectDbRow>('factory_projects', { org_id: orgId, id }, async current => {
         const changes = typeof input === 'function' ? await input(toFactoryProject(current), ops) : input;
         if (changes === null) return null;
+        const automationChanged =
+          (changes.autoRunEnabled !== undefined && changes.autoRunEnabled !== current.auto_run_enabled) ||
+          (changes.autoApprovePlans !== undefined && changes.autoApprovePlans !== current.auto_approve_plans);
+        if (automationChanged && !Number.isSafeInteger(current.automation_revision + 1)) {
+          throw new Error('Factory project automation revision exhausted');
+        }
         return {
+          ...(automationChanged ? { automation_revision: current.automation_revision + 1 } : {}),
           ...(changes.name !== undefined ? { name: changes.name } : {}),
           ...(changes.description !== undefined ? { description: changes.description } : {}),
           ...(changes.defaultModelId !== undefined ? { default_model_id: changes.defaultModelId } : {}),
@@ -339,8 +352,61 @@ export class FactoryProjectsStorage extends FactoryStorageDomain {
       });
     // LibSQL's standalone updateAtomic only serializes one client; a transaction
     // also protects a read-dependent update against other database connections.
-    const row = typeof input === 'function' ? await this.storage.withTransaction(update) : await update(this.#db);
+    const touchesAutomation =
+      typeof input === 'function' || input.autoRunEnabled !== undefined || input.autoApprovePlans !== undefined;
+    const row = touchesAutomation ? await this.storage.withTransaction(update) : await update(this.#db);
     return row ? toFactoryProject(row) : null;
+  }
+
+
+  /**
+   * One transaction fences the exact org/project, revision and prior pair. The caller must
+   * enforce authorization; this storage primitive never widens its tenant scope.
+   */
+  async compareAndSetAutomation({
+    orgId,
+    id,
+    expectedAutomationRevision,
+    expectedAutoRunEnabled,
+    expectedAutoApprovePlans,
+    autoRunEnabled,
+    autoApprovePlans,
+  }: {
+    orgId: string;
+    id: string;
+    expectedAutomationRevision: number;
+    expectedAutoRunEnabled: boolean;
+    expectedAutoApprovePlans: boolean;
+    autoRunEnabled: boolean;
+    autoApprovePlans: boolean;
+  }): Promise<{ status: 'updated'; project: FactoryProject } | { status: 'conflict'; project: FactoryProject } | { status: 'not_found' }> {
+    let conflict = false;
+    const row = await this.storage.withTransaction(ops =>
+      ops.updateAtomic<FactoryProjectDbRow>('factory_projects', { org_id: orgId, id }, current => {
+        if (
+          current.automation_revision !== expectedAutomationRevision ||
+          current.auto_run_enabled !== expectedAutoRunEnabled ||
+          current.auto_approve_plans !== expectedAutoApprovePlans
+        ) {
+          conflict = true;
+          return null;
+        }
+        if (current.auto_run_enabled === autoRunEnabled && current.auto_approve_plans === autoApprovePlans) {
+          return null;
+        }
+        const nextRevision = current.automation_revision + 1;
+        if (!Number.isSafeInteger(nextRevision)) throw new Error('Factory project automation revision exhausted');
+        return {
+          auto_run_enabled: autoRunEnabled,
+          auto_approve_plans: autoApprovePlans,
+          automation_revision: nextRevision,
+          updated_at: new Date(),
+        };
+      }),
+    );
+    if (!row) return { status: 'not_found' };
+    const project = toFactoryProject(row);
+    return conflict ? { status: 'conflict', project } : { status: 'updated', project };
   }
 
   /**
