@@ -37,6 +37,8 @@ pgDescribe('PG-only opt-in thread persistence guard protocol', () => {
       await memory.saveThread({ thread: thread('without-guard', 'personal') });
       expect(await memory.getThreadById({ threadId: 'without-guard' }))
         .toMatchObject({ resourceId: 'personal' });
+      await memory.deleteThread({ threadId: 'without-guard' });
+      expect(await memory.getThreadById({ threadId: 'without-guard' })).toBeNull();
     } finally {
       await store.close();
     }
