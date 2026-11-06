@@ -47,6 +47,13 @@ export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
   nativeSourceResolverInstalled: false,
   managerLeaseInstalled: false,
   comprehensiveExecutionCoverage: false,
+  // No Core hook can claim these external effect paths are intercepted.
+  // Future selected-project adoption must reject them until separately proven.
+  unsupportedEffectSources: Object.freeze([
+    'eager-provider-construction',
+    'direct-remote-gateway-execution',
+    'provider-executed-tools',
+  ] as const),
   adoptionReady: false,
   runtimeMode: 'disabled' as const,
 });

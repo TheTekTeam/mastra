@@ -227,6 +227,29 @@ export const FACTORY_API_ROUTE_METADATA = {
       "kind": "single"
     }
   },
+  "GET /web/factory/projects/:id/source-control-evidence": {
+    "contractKey": "projectAppEvidenceGet",
+    "method": "GET",
+    "path": "/web/factory/projects/:id/source-control-evidence",
+    "description": "Authenticated project-scoped read-only GitHub App repo, issue, PR, HP6 review and CI proof (no credentials)",
+    "pathParams": [
+      "id"
+    ],
+    "queryParams": [
+      "expectedAutomationRevision",
+      "expectedHeadSha",
+      "expectedMergeSha",
+      "issueNumber",
+      "pullRequestNumber",
+      "repository"
+    ],
+    "bodyParams": [],
+    "hasQuery": true,
+    "hasBody": false,
+    "responseShape": {
+      "kind": "single"
+    }
+  },
   "GET /web/factory/projects/:id/work-items": {
     "contractKey": "workItemList",
     "method": "GET",
@@ -1590,6 +1613,338 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
       "required": [
         "metrics"
       ]
+    }
+  },
+  "GET /web/factory/projects/:id/source-control-evidence": {
+    "path": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "query": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_.-]+\\/[A-Za-z0-9_.-]+$"
+        },
+        "issueNumber": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "pullRequestNumber": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "expectedAutomationRevision": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]{0,15})$"
+        },
+        "expectedHeadSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "expectedMergeSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        }
+      },
+      "required": [
+        "repository",
+        "issueNumber",
+        "pullRequestNumber",
+        "expectedAutomationRevision",
+        "expectedHeadSha",
+        "expectedMergeSha"
+      ],
+      "additionalProperties": false
+    },
+    "response": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "factory_app_source_v1"
+        },
+        "factoryOrgId": {
+          "type": "string"
+        },
+        "projectId": {
+          "type": "string",
+          "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+        },
+        "projectRepositoryLinkId": {
+          "type": "string"
+        },
+        "connectionId": {
+          "type": "string"
+        },
+        "repository": {
+          "type": "object",
+          "properties": {
+            "fullName": {
+              "type": "string"
+            },
+            "id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "ownerId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "fullName",
+            "id",
+            "ownerId"
+          ]
+        },
+        "installation": {
+          "type": "object",
+          "properties": {
+            "installationId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "appSlug": {
+              "type": "string",
+              "minLength": 1
+            },
+            "repositoryAccessVerified": {
+              "type": "boolean",
+              "const": true
+            },
+            "verifiedAtMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "installationId",
+            "appSlug",
+            "repositoryAccessVerified",
+            "verifiedAtMs"
+          ]
+        },
+        "bindingDigest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "projectAutomationRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "readAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAtMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "issue": {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "databaseId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "state": {
+              "type": "string"
+            },
+            "updatedAt": {
+              "type": "string"
+            },
+            "repositoryId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "number",
+            "databaseId",
+            "state",
+            "updatedAt",
+            "repositoryId"
+          ]
+        },
+        "pullRequest": {
+          "type": "object",
+          "properties": {
+            "number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "headSha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "baseSha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "mergeCommitSha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "mergedAtMs": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "repositoryId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "number",
+            "headSha",
+            "baseSha",
+            "mergeCommitSha",
+            "mergedAtMs",
+            "repositoryId"
+          ]
+        },
+        "reviews": {
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        "checks": {
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema1"
+          }
+        },
+        "unresolvedBlockingThreads": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "version",
+        "factoryOrgId",
+        "projectId",
+        "projectRepositoryLinkId",
+        "connectionId",
+        "repository",
+        "installation",
+        "bindingDigest",
+        "projectAutomationRevision",
+        "readAtMs",
+        "expiresAtMs",
+        "issue",
+        "pullRequest",
+        "reviews",
+        "checks",
+        "unresolvedBlockingThreads"
+      ],
+      "additionalProperties": false,
+      "$defs": {
+        "__schema0": {
+          "type": "object",
+          "properties": {
+            "reviewerId": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "identity": {
+              "type": "string",
+              "minLength": 1
+            },
+            "state": {
+              "type": "string"
+            },
+            "commitId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "submittedAtMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "reviewerId",
+            "identity",
+            "state",
+            "commitId",
+            "submittedAtMs"
+          ]
+        },
+        "__schema1": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "headSha": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{40}$"
+            },
+            "status": {
+              "type": "string"
+            },
+            "conclusion": {
+              "type": "string"
+            },
+            "completedAtMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "name",
+            "headSha",
+            "status",
+            "conclusion",
+            "completedAtMs"
+          ]
+        }
+      }
     }
   },
   "GET /web/factory/projects/:id/work-items": {
@@ -3460,6 +3815,7 @@ export const FACTORY_API_ROUTE_CATALOG = {
   "projectEnvironmentBuildGet": "GET /web/factory/projects/:id/environment/builds/:buildId",
   "healthThresholdsGet": "GET /web/factory/projects/:id/health/thresholds",
   "metricsGet": "GET /web/factory/projects/:id/metrics",
+  "projectAppEvidenceGet": "GET /web/factory/projects/:id/source-control-evidence",
   "workItemList": "GET /web/factory/projects/:id/work-items",
   "projectUpdate": "PATCH /web/factory/projects/:id",
   "projectAutomationCompareAndSet": "PATCH /web/factory/projects/:id/automation",

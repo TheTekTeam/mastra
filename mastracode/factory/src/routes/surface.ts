@@ -63,6 +63,7 @@ import { KnowledgeRoutes } from './knowledge.js';
 import { OAuthRoutes } from './oauth.js';
 import type { RouteAuth } from './route.js';
 import { SkillRoutes } from './skills.js';
+import { buildProjectAppEvidenceRoutes } from './source-control-app-evidence.js';
 import { buildSourceControlSessionRoutes } from './source-control-sessions.js';
 import { buildSourceControlSettingsRoutes } from './source-control-settings.js';
 import { invalidateTenantCredentialSnapshots } from './tenant-credentials.js';
@@ -789,6 +790,15 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
     }).routes(),
     ...sourceControlSessionRoutes,
     ...(sourceControls.length === 0 ? [] : buildSourceControlSettingsRoutes({ auth: deps.auth, sourceControls })),
+    ...(githubStorage && githubIntegration
+      ? buildProjectAppEvidenceRoutes({
+          auth: deps.auth,
+          projects: deps.domains.projects,
+          sourceControl: githubStorage,
+          github: githubIntegration,
+          enabled: process.env.FACTORY_APP_EVIDENCE_READ_ENABLED === 'true',
+        })
+      : []),
     ...providerRoutes,
     ...absentStubs,
     ...slackAbsentStubs,
