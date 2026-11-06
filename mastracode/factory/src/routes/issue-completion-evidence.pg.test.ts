@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
 import { PgFactoryStorage } from '@mastra/pg';
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
@@ -93,6 +96,51 @@ describe.skipIf(!database)('native final-issue receipt across disposable PG18 cl
       const native = await app(second).request(path);
       expect(native.status).toBe(200);
       expect(await native.json()).toEqual(receipt);
+
+      // A second storage instance inside the Vitest worker is not a second
+      // process. Prove the immutable record survives a real separate Node OS
+      // process and can be replayed from its own independent PG connection.
+      const childProgram = [
+        "import { readFileSync } from 'node:fs';",
+        "import { PgFactoryStorage } from '@mastra/pg';",
+        "import { FactoryProjectsStorage } from './src/storage/domains/projects/base.js';",
+        "import { WorkItemsStorage } from './src/storage/domains/work-items/base.js';",
+        "const [orgId, projectId, itemId] = process.argv.slice(1);",
+        "const receipt = JSON.parse(readFileSync(0, 'utf8'));",
+        "const storage = new PgFactoryStorage({ id: 'completion-replay-child-' + process.pid, connectionString: process.env.FACTORY_TEST_POSTGRES_URL });",
+        "storage.registerDomain(new FactoryProjectsStorage());",
+        "const items = storage.registerDomain(new WorkItemsStorage());",
+        "items.useTerminalPhasePredicate(item => item.stages.includes('intake'));",
+        "await storage.init();",
+        "try {",
+        "  const result = await items.getIssueCompletionEvidence(orgId, projectId, itemId);",
+        "  const replay = await items.acceptIssueCompletionEvidenceCandidate({ orgId, factoryProjectId: projectId, receipt, verify: async () => true });",
+        "  const rows = await storage.ops.findMany('factory_issue_completion_evidence', { org_id: orgId, factory_project_id: projectId, work_item_id: itemId });",
+        "  console.log(JSON.stringify({ pid: process.pid, result, replay, count: rows.length }));",
+        "} finally { await storage.close(); }",
+      ].join('\n');
+      const childOutput = execFileSync(process.execPath, [
+        '--import', 'tsx', '--input-type=module', '--eval', childProgram,
+        ORG, project.id, item.id,
+      ], {
+        cwd: fileURLToPath(new URL('../..', import.meta.url)),
+        encoding: 'utf8',
+        timeout: 20_000,
+        input: JSON.stringify(receipt),
+        env: { ...process.env, NODE_ENV: 'test' },
+      }).trim();
+      const child = JSON.parse(childOutput.split('\n').at(-1)!) as {
+        pid: number;
+        result: unknown;
+        replay: { status: string };
+        count: number;
+      };
+      expect(child.pid).not.toBe(process.pid);
+      expect(child.result).toEqual({ kind: 'found', receipt,
+        repositoryId: 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa' });
+      expect(child.replay).toEqual({ status: 'replayed' });
+      expect(child.count).toBe(1);
+
       expect((await second.workItems.acceptIssueCompletionEvidenceCandidate({
         orgId: ORG, factoryProjectId: project.id, receipt, verify: async () => true,
       })).status).toBe('replayed');

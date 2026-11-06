@@ -14,7 +14,7 @@ const USER = { workosId: 'u1', organizationId: ORG };
 const REQUEST = '11111111-1111-4111-8111-111111111111';
 type Verify = (receipt: IssueCompletionReceipt, scope: { orgId: string; factoryProjectId: string; repositoryId: string }) => Promise<boolean>;
 
-function app(seed: FactoryStorageTestSeed, verify?: Verify, user: typeof USER | null = USER, noAdmin = false, enabled = true) {
+function app(seed: FactoryStorageTestSeed, verify?: Verify, user: { workosId: string; organizationId?: string } | null = USER, noAdmin = false, enabled = true) {
   const hono = new Hono();
   hono.use('*', async (c, next) => {
     if (user) c.set('factoryAuthUser' as never, user as never);
@@ -93,9 +93,18 @@ describe('authenticated native issue completion readback', () => {
   it('denies unauthenticated and cross-tenant access, and keeps unsigned candidates default-off for members', async () => {
     const f = await fixture();
     await persistCandidate(f);
-    expect((await app(f.seed, undefined, null).request(f.path)).status).toBe(401);
-    expect((await app(f.seed, undefined, { workosId: 'other', organizationId: 'other' }).request(f.path)).status).toBe(404);
-    expect((await app(f.seed, undefined, { workosId: 'other' }).request(f.path)).status).toBe(403);
+    // Explicit JSON errors prevent an absent/unmatched API route from falling
+    // through the Factory SPA and returning misleading HTTP 200 HTML.
+    for (const [user, status, error] of [
+      [null, 401, 'unauthorized'],
+      [{ workosId: 'other', organizationId: 'other' }, 404, 'Project not found'],
+      [{ workosId: 'other' }, 403, 'organization_required'],
+    ] as const) {
+      const denied = await app(f.seed, undefined, user).request(f.path);
+      expect(denied.status).toBe(status);
+      expect(denied.headers.get('content-type')).toContain('application/json');
+      expect(await denied.json()).toMatchObject({ error });
+    }
     expect((await app(f.seed, undefined, USER, true).request(f.path)).status).toBe(409);
     expect((await app(f.seed).request(f.path)).status).toBe(409);
     expect((await app(f.seed, undefined, null, false, false).request(f.path)).status).toBe(401);
@@ -116,6 +125,7 @@ describe('authenticated native issue completion readback', () => {
     const response = await app(f.seed, verifier).request(f.path);
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual(f.receipt);
+    expect(Object.keys(f.receipt)).toHaveLength(23);
     expect(verifier).toHaveBeenCalledTimes(1);
   });
 
