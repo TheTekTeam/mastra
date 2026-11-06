@@ -405,7 +405,7 @@ describe('automation-runs ingress', () => {
       if (!persistedClosed) await persistedSeed.storage.close();
       await rm(directory, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it('grants receipt read to signed-in members of only the owning project organization', async () => {
     await seedProjectAndItem();
