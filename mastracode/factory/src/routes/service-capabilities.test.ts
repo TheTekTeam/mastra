@@ -127,6 +127,14 @@ describe('explicit Factory service grants: human administration and native mutat
     expect(listingText).not.toContain(createHash('sha256').update(grant.token).digest('hex'));
     const bearer = { authorization: 'FactoryService ' + grant.token };
     expect((await s.request(s.base + '/service-capability/grants', 'GET', undefined, bearer, null)).status).toBe(401);
+    expect((await s.request(s.base + '/service-capability/consents', 'POST',
+      s.intent, { ...bearer, origin }, admin)).status).toBe(403);
+    expect((await s.request(s.base + '/service-capability/grants', 'GET',
+      undefined, bearer, admin)).status).toBe(403);
+    const deniedAudit = await s.seed.serviceCapabilities.listAudit({
+      orgId: admin.organizationId, projectId: s.project.id,
+    });
+    expect(deniedAudit.filter(e => e.outcome === 'denied').length).toBeGreaterThanOrEqual(2);
     expect((await s.request(s.base + '/service-capability/consents', 'POST', s.intent,
       { ...bearer, origin }, null)).status).toBe(401);
   });
