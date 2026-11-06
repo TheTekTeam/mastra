@@ -1,9 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { describe, expect, it, vi } from 'vitest';
+
+import { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
+import { ServiceCapabilityStorage } from '../storage/domains/service-capabilities/base.js';
 
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { ServiceCapabilityAuthority } from './authority.js';
@@ -293,6 +297,59 @@ describe('native service capability grant authority', () => {
     expect(audits.some(a => a.outcome === 'effect_started')).toBe(true);
     expect(audits.some(a => a.outcome === 'revoked')).toBe(true);
     expect(audits.some(a => a.outcome === 'succeeded')).toBe(true);
+  });
+
+  it('migrates a pre-service Factory DB and restores an untouched backup with grants default empty', async () => {
+    const folder = await mkdtemp(join(tmpdir(), 'factory-service-schema-upgrade-'));
+    const legacyUrl = 'file:' + join(folder, 'legacy.db');
+    const backupPath = join(folder, 'backup.db');
+    let first: LibSQLFactoryStorage | undefined;
+    let migrated: LibSQLFactoryStorage | undefined;
+    let restored: LibSQLFactoryStorage | undefined;
+    try {
+      first = new LibSQLFactoryStorage({ id: 'legacy-factory-test', url: legacyUrl });
+      const originalProjects = first.registerDomain(new FactoryProjectsStorage());
+      await first.init();
+      const project = await originalProjects.create({
+        orgId: 'verified-org', userId: 'gp-admin', input: { name: 'Pre-capability project' },
+      });
+      await first.close();
+      first = undefined;
+      await copyFile(join(folder, 'legacy.db'), backupPath);
+
+      migrated = new LibSQLFactoryStorage({ id: 'upgraded-factory-test', url: legacyUrl });
+      const projects = migrated.registerDomain(new FactoryProjectsStorage());
+      const capabilityStorage = migrated.registerDomain(new ServiceCapabilityStorage());
+      await migrated.init();
+      expect(await projects.get({ orgId: 'verified-org', id: project.id })).toMatchObject({
+        id: project.id, name: 'Pre-capability project',
+      });
+      expect(await capabilityStorage.listGrants({ orgId: 'verified-org', projectId: project.id })).toEqual([]);
+      expect(await capabilityStorage.listUnsettledEffectLeases({
+        orgId: 'verified-org', projectId: project.id,
+      })).toEqual([]);
+      await migrated.close();
+      migrated = undefined;
+
+      // Recovery uses the exact pre-upgrade disk snapshot, not a schema downgrade.
+      restored = new LibSQLFactoryStorage({
+        id: 'restored-factory-test', url: 'file:' + backupPath,
+      });
+      const recoveredProjects = restored.registerDomain(new FactoryProjectsStorage());
+      const recoveredCapabilities = restored.registerDomain(new ServiceCapabilityStorage());
+      await restored.init();
+      expect(await recoveredProjects.get({ orgId: 'verified-org', id: project.id })).toMatchObject({
+        id: project.id, name: 'Pre-capability project',
+      });
+      expect(await recoveredCapabilities.listGrants({
+        orgId: 'verified-org', projectId: project.id,
+      })).toEqual([]);
+    } finally {
+      await first?.close();
+      await migrated?.close();
+      await restored?.close();
+      await rm(folder, { recursive: true, force: true });
+    }
   });
 
   it('does not permit cross-tenant or widened issuance intent, wrong issuer, weak key or HTTP origin', async () => {
