@@ -109,6 +109,9 @@ export interface ServiceCapabilityAdmission {
   action: ServiceCapabilityAction;
   requestId: string;
   bodyFingerprint: string;
+  role?: string;
+  skillName?: string;
+  argumentsDigest?: string;
 }
 
 export class ServiceCapabilityAuthority {
@@ -316,6 +319,9 @@ export class ServiceCapabilityAuthority {
         action: input.action,
         requestId: input.requestId,
         bodyFingerprint: input.bodyFingerprint,
+        ...(input.role ? { role: input.role } : {}),
+        ...(input.skillName ? { skillName: input.skillName } : {}),
+        ...(input.argumentsDigest ? { argumentsDigest: input.argumentsDigest } : {}),
       },
     };
   }
@@ -353,6 +359,9 @@ export class ServiceCapabilityAuthority {
       action: admission.action,
       requestId: admission.requestId,
       bodyFingerprint: admission.bodyFingerprint,
+      role: admission.role,
+      skillName: admission.skillName,
+      argumentsDigest: admission.argumentsDigest,
       now,
     });
   }
