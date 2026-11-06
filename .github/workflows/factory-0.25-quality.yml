@@ -16,6 +16,8 @@ on:
       - 'mastracode/factory/**'
       - 'packages/core/src/llm/model/**'
       - 'packages/core/src/loop/shared/**'
+      - 'packages/core/src/loop/workflows/agentic-execution/**'
+      - 'packages/core/src/agent/durable/workflows/steps/**'
       - 'packages/core/src/stream/aisdk/v5/**'
       - 'mastracode/web/src/mastra/index.ts'
       - 'mastracode/web/src/mastra/index.test.ts'
@@ -159,10 +161,11 @@ jobs:
           pnpm --filter @mastra/core exec vitest run \
             src/llm/model/legacy-effect-boundary.test.ts \
             src/loop/shared/core-effect-admission.test.ts \
+            src/loop/shared/core-effect-engine-denial.test.ts \
             --reporter=json --outputFile="$RUNNER_TEMP/core-a2.json" --maxWorkers=1
           node -e '
             const fs = require("node:fs");
-            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 8, "Core"]]) {
+            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 13, "Core"]]) {
               const r = JSON.parse(fs.readFileSync(path, "utf8"));
               if (r.numTotalTests !== count || r.numPassedTests !== count ||
                   r.numPendingTests !== 0 || r.numFailedTests !== 0) {
