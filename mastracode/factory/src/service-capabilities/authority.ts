@@ -9,6 +9,7 @@ import type {
   ServiceCapabilityAction,
   ServiceCapabilityAuditEvent,
   ServiceCapabilityGrant,
+  ServiceEnqueueProfile,
   ServiceCapabilityStorage,
 } from '../storage/domains/service-capabilities/base.js';
 
@@ -36,6 +37,7 @@ export interface ServiceCapabilityIssueIntent {
   operation: 'issue';
   actions: ServiceCapabilityAction[];
   workItemIds: string[];
+  enqueueProfiles: ServiceEnqueueProfile[];
   ttlSeconds: number;
 }
 export interface ServiceCapabilityRevokeIntent {
@@ -51,6 +53,7 @@ export interface ServiceCapabilityPublicGrant {
   projectId: string;
   actions: ServiceCapabilityAction[];
   workItemIds: string[];
+  enqueueProfiles: ServiceEnqueueProfile[];
   issuedByUserId: string;
   issuedAt: Date;
   expiresAt: Date;
@@ -72,19 +75,33 @@ export function validateServiceCapabilityIntent(intent: ServiceCapabilityIntent)
   if ([...actions].some(action => action !== 'workItem.enqueue' && action !== 'projectAutomation.set')) return false;
   if (intent.workItemIds.length > 8 || new Set(intent.workItemIds).size !== intent.workItemIds.length) return false;
   if (intent.workItemIds.some(itemId => !UUID.test(itemId))) return false;
-  return actions.has('workItem.enqueue') ? intent.workItemIds.length > 0 : intent.workItemIds.length === 0;
+  const profiles = intent.enqueueProfiles;
+  if (!Array.isArray(profiles) || profiles.length > 8 ||
+      new Set(profiles.map(profile => profile.workItemId)).size !== profiles.length) return false;
+  const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]*$/;
+  if (profiles.some(profile =>
+    !UUID.test(profile.workItemId) ||
+    !SAFE.test(profile.role) || profile.role.length > 64 ||
+    !SAFE.test(profile.skillName) || profile.skillName.length > 128 ||
+    !/^[a-f0-9]{64}$/.test(profile.argumentsDigest))) return false;
+  if (profiles.length !== intent.workItemIds.length ||
+      profiles.some(profile => !intent.workItemIds.includes(profile.workItemId))) return false;
+  return actions.has('workItem.enqueue') ? profiles.length > 0 : profiles.length === 0;
 }
 
 function intentDigest(intent: ServiceCapabilityIntent): string {
   const canonical =
     intent.operation === 'issue'
-      ? ['issue', [...intent.actions].sort(), [...intent.workItemIds].sort(), intent.ttlSeconds]
+      ? ['issue', [...intent.actions].sort(), [...intent.workItemIds].sort(),
+          [...intent.enqueueProfiles].sort((a, b) => a.workItemId.localeCompare(b.workItemId)), intent.ttlSeconds]
       : ['revoke', intent.targetGrantId];
   return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
 }
 
 export interface ServiceCapabilityAdmission {
   grantId: string;
+  leaseId: string;
+  grantVersion: number;
   principalId: string;
   orgId: string;
   projectId: string;
@@ -193,6 +210,7 @@ export class ServiceCapabilityAuthority {
       expiresAt: new Date(now.getTime() + input.intent.ttlSeconds * 1000),
       actions: input.intent.actions,
       workItemIds: input.intent.workItemIds,
+      enqueueProfiles: input.intent.enqueueProfiles,
       tokenHash: this.#hmac('service', token),
     };
     const result = await this.#storage.issueWithConsent({
@@ -251,6 +269,9 @@ export class ServiceCapabilityAuthority {
     workItemId?: string;
     requestId: string;
     bodyFingerprint: string;
+    role?: string;
+    skillName?: string;
+    argumentsDigest?: string;
     now?: Date;
   }): Promise<{ status: 'admitted'; admission: ServiceCapabilityAdmission } | { status: 'denied' }> {
     const raw = input.authorization.slice('FactoryService '.length);
@@ -276,16 +297,21 @@ export class ServiceCapabilityAuthority {
       projectAllowed: this.#policy.allowedProjectIds.has(input.projectId),
       requestId: input.requestId,
       bodyFingerprint: input.bodyFingerprint,
+      role: input.role,
+      skillName: input.skillName,
+      argumentsDigest: input.argumentsDigest,
       now: input.now,
     });
     if (!grant) return { status: 'denied' };
     return {
       status: 'admitted',
       admission: {
-        grantId: grant.id,
-        principalId: grant.principalId,
-        orgId: grant.orgId,
-        projectId: grant.projectId,
+        grantId: grant.grant.id,
+        leaseId: grant.lease.id,
+        grantVersion: grant.grant.version,
+        principalId: grant.grant.principalId,
+        orgId: grant.grant.orgId,
+        projectId: grant.grant.projectId,
         workItemId: input.workItemId ?? null,
         action: input.action,
         requestId: input.requestId,
@@ -317,21 +343,31 @@ export class ServiceCapabilityAuthority {
     });
   }
 
-  /** Appends the effect outcome without exposing token material. Failure is EFFECT_UNVERIFIED to the caller. */
-  async finish(admission: ServiceCapabilityAdmission, outcome: ServiceCapabilityAuditEvent['outcome'], reason: string | null = null) {
-    await this.#storage.recordAudit({
+  async beginEffect(admission: ServiceCapabilityAdmission, now?: Date): Promise<boolean> {
+    return this.#storage.beginEffect({
+      leaseId: admission.leaseId,
       grantId: admission.grantId,
+      grantVersion: admission.grantVersion,
       orgId: admission.orgId,
       projectId: admission.projectId,
-      workItemId: admission.workItemId,
-      principalId: admission.principalId,
-      actorId: admission.principalId,
       action: admission.action,
       requestId: admission.requestId,
       bodyFingerprint: admission.bodyFingerprint,
+      now,
+    });
+  }
+
+  /** Durable, non-replayed effect settlement; throws on audit failure or duplicate finish. */
+  async finish(
+    admission: ServiceCapabilityAdmission,
+    outcome: 'succeeded' | 'rejected' | 'effect_unverified',
+    reason: string | null = null,
+  ): Promise<void> {
+    await this.#storage.finishEffect({
+      leaseId: admission.leaseId,
+      grantId: admission.grantId,
       outcome,
       reason,
-      occurredAt: new Date(),
     });
   }
 }
