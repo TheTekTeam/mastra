@@ -96,8 +96,8 @@ export function buildProjectAppBindingRoutes(options: Options): ApiRoute[] {
         // The final remote GitHub call is an await: a link may be unlinked or
         // the automation epoch advanced while that last grant check ran.
         // Revalidate the durable DB scope AFTER it, immediately before reply.
-        const closingBinding = await binding(options, scope);
         const closingProject = await options.projects.get({ orgId: tenant.orgId, id: args.projectId });
+        const closingBinding = await binding(options, scope);
         if (!closingBinding || closingBinding.bindingDigest !== before.bindingDigest ||
             !closingProject || closingProject.name !== firstProject.name ||
             closingProject.automationRevision !== before.projectAutomationRevision)
