@@ -130,6 +130,9 @@ describe('native service capability grant authority', () => {
     const admitted = await authority.admit(input);
     expect(admitted.status).toBe('admitted');
     if (admitted.status !== 'admitted') throw new Error('Expected admitted mutation');
+    expect(await authority.beginEffect({
+      ...admitted.admission, role: 'plan',
+    }, new Date(now.getTime() + 60_001))).toBe(false);
     expect(await authority.beginEffect(admitted.admission, new Date(now.getTime() + 60_001))).toBe(true);
     await authority.finish(admitted.admission, 'succeeded');
     expect(await authority.admit({ ...input, projectId: '12345678-1234-4234-8234-123456789011' })).toEqual({
