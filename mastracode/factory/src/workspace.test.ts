@@ -4,8 +4,8 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadSessionInstructions } from '@mastra/code-sdk/agents/prompts/agent-instructions';
 import { RequestContext } from '@mastra/core/request-context';
-import { FactorySandbox, LocalSandbox } from '@mastra/core/workspace';
-import type { FactorySandboxContext, LocalFilesystem } from '@mastra/core/workspace';
+import { FactorySandbox, LocalFilesystem, LocalSandbox } from '@mastra/core/workspace';
+import type { FactorySandboxContext } from '@mastra/core/workspace';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -149,6 +149,7 @@ import {
   peekSessionEnvironment,
   peekSessionEnvironmentTeardown,
 } from './session/environment-state-processor.js';
+import { resolveSkillInvocation } from './skills/service.js';
 import {
   createWorkspaceFactory,
   FactorySkillSource,
@@ -2946,6 +2947,138 @@ describe('GitHub session workspace preparation', () => {
       await settle();
 
       expect(constructedSandbox().start).not.toHaveBeenCalled();
+      expect(mocks.materializeRepo).not.toHaveBeenCalled();
+    });
+
+    async function invocationFixture(
+      skillBody: string | null = [
+        '---',
+        'name: modelspend-implementation',
+        'description: Apply the ModelSpend implementation rules',
+        '---',
+        'Implement safely.',
+      ].join('\n'),
+    ) {
+      const { root, resolver } = await createLocalFactory();
+      addProject();
+      addSession({ id: 'session-a' });
+      const checkout = path.join(root, 'session-a', 'hello');
+      if (skillBody !== null) {
+        const skillDir = path.join(checkout, '.agents', 'skills', 'modelspend-implementation');
+        await fs.mkdir(skillDir, { recursive: true });
+        await fs.writeFile(path.join(skillDir, 'SKILL.md'), skillBody);
+      }
+      const originalCreate = mocks.createSandbox.getMockImplementation()!;
+      mocks.createSandbox.mockImplementationOnce(context => {
+        const sandbox = originalCreate(context);
+        sandbox.filesystem = new LocalFilesystem({ basePath: checkout });
+        return sandbox;
+      });
+      const workspace = await resolver({ requestContext: createGithubRequestContext('project-1', 'session-a') });
+      const sandbox = mocks.createSandbox.mock.results[0]!.value;
+      const controller = { getSession: vi.fn(async () => ({ getWorkspace: () => workspace })) };
+      const input = { sessionId: 'session-a', name: 'modelspend-implementation' };
+      return { workspace, sandbox, controller, input };
+    }
+
+    it('finds an existing project skill for an authorized invocation before lazy sandbox boot (#210)', async () => {
+      const { sandbox, controller, input } = await invocationFixture();
+      expect(sandbox.status).toBe('pending');
+      const resolved = await resolveSkillInvocation(controller as never, input);
+      expect(resolved.contents).toContain('Implement safely.');
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('coalesces simultaneous project-skill invocations onto one sandbox setup (#210)', async () => {
+      const { sandbox, controller, input } = await invocationFixture();
+      const resolved = await Promise.all(
+        Array.from({ length: 3 }, () => resolveSkillInvocation(controller as never, input)),
+      );
+      expect(resolved).toHaveLength(3);
+      expect(resolved.every(result => result.contents.includes('Implement safely.'))).toBe(true);
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('waits for checkout setup even if the sandbox already reports running (#210)', async () => {
+      let release!: () => void;
+      const blocked = new Promise<void>(resolve => {
+        release = resolve;
+      });
+      mocks.materializeRepo.mockImplementationOnce(() => blocked);
+      const { sandbox, controller, input } = await invocationFixture();
+      const starting = sandbox.start();
+      await vi.waitFor(() => expect(mocks.materializeRepo).toHaveBeenCalledOnce());
+      expect(sandbox.status).toBe('running');
+      const resolving = resolveSkillInvocation(controller as never, input);
+      let settled = false;
+      void resolving.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(settled).toBe(false);
+      } finally {
+        release();
+      }
+      await starting;
+      await expect(resolving).resolves.toMatchObject({ skillName: 'modelspend-implementation' });
+      expect(sandbox.start).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps absent repository skills denied after bounded materialization (#210)', async () => {
+      const { controller } = await invocationFixture(null);
+      await expect(
+        resolveSkillInvocation(controller as never, { sessionId: 'session-a', name: 'nonexistent-skill' }),
+      ).rejects.toMatchObject({ code: 'skill_not_found' });
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('does not invoke a repository skill marked user-invocable false (#210)', async () => {
+      const { controller, input } = await invocationFixture(
+        [
+          '---',
+          'name: modelspend-implementation',
+          'description: Restricted skill',
+          'user-invocable: false',
+          '---',
+          'Not available for direct invocation.',
+        ].join('\n'),
+      );
+      await expect(resolveSkillInvocation(controller as never, input)).rejects.toMatchObject({
+        code: 'skill_not_found',
+      });
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed when the repository checkout onStart hook fails (#210)', async () => {
+      mocks.materializeRepo.mockRejectedValueOnce(new MaterializeError('exec', 'skill checkout failed'));
+      const { sandbox, controller, input } = await invocationFixture();
+      await expect(resolveSkillInvocation(controller as never, input)).rejects.toThrow();
+      expect(sandbox.start).toHaveBeenCalledOnce();
+      expect(mocks.materializeRepo).toHaveBeenCalledOnce();
+    });
+
+    it('fails closed when the post-checkout skill refresh fails (#210)', async () => {
+      const { workspace, sandbox, controller, input } = await invocationFixture();
+      const refresh = vi.spyOn(workspace.skills!, 'refresh').mockRejectedValue(new Error('skill refresh failed'));
+      await expect(resolveSkillInvocation(controller as never, input)).rejects.toThrow('skill refresh failed');
+      expect(sandbox.start).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not start a lazy sandbox for an unauthorized unknown-skill invocation (#210)', async () => {
+      const { sandbox } = await invocationFixture(null);
+      const deniedController = { getSession: vi.fn(async () => undefined) };
+      await expect(
+        resolveSkillInvocation(deniedController as never, { sessionId: 'session-a', name: 'nonexistent-skill' }),
+      ).rejects.toMatchObject({ code: 'session_not_found' });
+      expect(sandbox.start).not.toHaveBeenCalled();
       expect(mocks.materializeRepo).not.toHaveBeenCalled();
     });
 

@@ -5,7 +5,13 @@ import type { RequestContext } from '@mastra/core/request-context';
 import { formatSkillActivation } from '@mastra/core/workspace';
 import type { Workspace } from '@mastra/core/workspace';
 
-import { REVIEW_ONLY_FACTORY_SKILLS, rescanFactorySkills } from '../workspace.js';
+import {
+  awaitInFlightFactorySandboxSetup,
+  FACTORY_SKILL_NAMES,
+  REVIEW_ONLY_FACTORY_SKILLS,
+  refreshRepositorySkillsForInvocation,
+  rescanFactorySkills,
+} from '../workspace.js';
 
 export interface SkillInvocationInput {
   sessionId: string;
@@ -45,11 +51,27 @@ export class SkillInvocationError extends Error {
 }
 
 async function findSkill(session: SkillSession, name: string) {
-  const skills = session.getWorkspace().skills;
+  const workspace = session.getWorkspace();
+  const skills = workspace.skills;
   if (!skills) return undefined;
   await skills.maybeRefresh();
   const skill = await skills.get(name);
-  if (skill || !REVIEW_ONLY_FACTORY_SKILLS.has(name)) return skill;
+  if (skill) {
+    // A checkout may be readable while its onStart setup is still running.
+    // Preserve bundled Factory skill fast paths, but don't resolve a repo
+    // skill until the in-flight checkout setup finished successfully.
+    if (!FACTORY_SKILL_NAMES.has(name) && (await awaitInFlightFactorySandboxSetup(workspace))) {
+      await skills.refresh();
+      return skills.get(name);
+    }
+    return skill;
+  }
+  if (!REVIEW_ONLY_FACTORY_SKILLS.has(name)) {
+    // Factory can resolve an authorized kickoff before a lazy checkout exists.
+    // Refresh only after materialization; never retry the native decision.
+    await refreshRepositorySkillsForInvocation(workspace);
+    return skills.get(name);
+  }
   // The cache may predate the review binding this run was just given.
   try {
     await rescanFactorySkills(skills);
