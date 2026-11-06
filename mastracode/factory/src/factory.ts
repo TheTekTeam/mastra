@@ -68,6 +68,8 @@ import type { GitLabIntegrationBase } from './integrations/gitlab/integration.js
 import { PlatformApiClient, platformApiClientConfigFromEnv } from './integrations/platform/api-client.js';
 import { buildPlatformConnectRoutes } from './integrations/platform/connect/routes.js';
 import { createSessionAsRowOwner, prepareSessionRunContext } from './integrations/subscription-session.js';
+import { ServiceCapabilityAuthority } from './service-capabilities/authority.js';
+import type { ServiceCapabilityPolicy } from './service-capabilities/authority.js';
 import { buildFactoryMcpRoutes, resolveMcpAuthorizationServers } from './mcp/routes.js';
 import type { FactoryMcpConfig } from './mcp/routes.js';
 import { resolveDeploymentModelProviders } from './routes/config.js';
@@ -103,6 +105,7 @@ import { LocalFactorySandbox } from './sandbox/local-factory-sandbox.js';
 import { SessionRetirementCoordinator } from './sandbox/session-retirement.js';
 import type { MastraFactorySandboxOption } from './sandbox/session-sandbox.js';
 import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
+import { ServiceCapabilityStorage } from './storage/domains/service-capabilities/base.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
@@ -232,6 +235,8 @@ export interface MastraFactoryConfig {
    * static host, so credentialed requests must be explicitly allowed.
    */
   allowedOrigins?: string[];
+  /** Explicit, disabled-by-default Factory service-principal pilot; never grants human admin. */
+  serviceCapabilities?: ServiceCapabilityPolicy;
   /**
    * The host's sandbox: a FactorySandbox instance such as
    * `new PlatformFactorySandbox({ ... })`, which owns the session sandbox
@@ -622,6 +627,16 @@ export class MastraFactory {
     // default persistence surface for integrations without a bespoke domain.
     const integrationStorage = storage.registerDomain(new IntegrationStorage(secretEncryption));
     const factoryProjectsStorage = storage.registerDomain(new FactoryProjectsStorage());
+    if (this.#config.serviceCapabilities && !auth) {
+      throw new Error('Service capabilities require authenticated Factory organization sessions');
+    }
+    const serviceCapabilities = this.#config.serviceCapabilities
+      ? new ServiceCapabilityAuthority({
+          storage: storage.registerDomain(new ServiceCapabilityStorage()),
+          projects: factoryProjectsStorage,
+          policy: this.#config.serviceCapabilities,
+        })
+      : undefined;
     const filesystemStorage = storage.registerDomain(new FilesystemStorage());
     const sourceControlStorage = storage.registerDomain(new SourceControlStorage());
     // Reverse index from a platform sender (Slack/Discord/...) to a Mastra
@@ -1044,6 +1059,7 @@ export class MastraFactory {
     const environmentBuilds = this.#environmentBuilds;
     const projectRoutes = new ProjectRoutes({
       auth: routeAuth,
+      ...(serviceCapabilities ? { serviceCapabilities } : {}),
       sandbox: this.#sandbox,
       ...(environmentBuilds ? { environmentBuilds } : {}),
       projects: factoryProjectsStorage,
@@ -1687,6 +1703,7 @@ export class MastraFactory {
             controller,
             liveSessions: liveSessionsTouchingTheFeed(controller, eventBus),
             auth: routeAuth,
+            ...(serviceCapabilities ? { serviceCapabilities } : {}),
             ...(auth && isUserProvider(auth) ? { users: auth } : {}),
             authStorage,
             audit: auditDomain,
