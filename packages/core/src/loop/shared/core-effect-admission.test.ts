@@ -9,6 +9,7 @@ import {
   beforeCoreAgentPreparation,
   beforeCoreDynamicModelResolution,
   beforeCoreDynamicToolResolution,
+  beforeCoreDynamicDefaultOptionsResolution,
   beforeCoreDurableRecovery,
   assertCoreSynchronousIngress,
   CoreSynchronousIngressGate,
@@ -36,6 +37,7 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
     expect(beforeCoreAgentPreparation()).toBeUndefined();
     expect(beforeCoreDynamicModelResolution()).toBeUndefined();
     expect(beforeCoreDynamicToolResolution()).toBeUndefined();
+    expect(beforeCoreDynamicDefaultOptionsResolution()).toBeUndefined();
     expect(beforeCoreDurableRecovery()).toBeUndefined();
     expect(() => assertCoreSynchronousIngress('synchronous-clone-construction')).not.toThrow();
     expect(() => assertCoreSynchronousIngress('synchronous-thread-signal')).not.toThrow();
@@ -94,6 +96,7 @@ describe('A2a hard-disabled shared Core effect checkpoints (PM #36)', () => {
       'agent-preparation',
       'dynamic-model-resolution',
       'dynamic-tool-resolution',
+      'dynamic-default-options-resolution',
       'durable-recovery',
       'synchronous-clone-construction',
       'synchronous-thread-signal',

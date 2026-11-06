@@ -52,6 +52,7 @@ import { AGENTIC_EXECUTION_WORKFLOW_ID, AGENTIC_LOOP_WORKFLOW_ID } from '../loop
 import { networkLoop } from '../loop/network';
 import {
   beforeCoreAgentPreparation,
+  beforeCoreDynamicDefaultOptionsResolution,
   beforeCoreDynamicModelResolution,
   beforeCoreDynamicToolResolution,
   assertCoreSynchronousIngress,
@@ -3518,32 +3519,39 @@ export class Agent<
   public getDefaultOptions({ requestContext = new RequestContext() }: { requestContext?: RequestContext } = {}):
     | AgentExecutionOptions<TOutput>
     | Promise<AgentExecutionOptions<TOutput>> {
-    if (typeof this.#defaultOptions !== 'function') {
-      return this.#defaultOptions;
+    const configuredDefaults = this.#defaultOptions;
+    if (typeof configuredDefaults !== 'function') {
+      return configuredDefaults;
     }
 
-    const result = this.#defaultOptions({
-      requestContext: requestContext as RequestContext<TRequestContext>,
-      mastra: this.#mastra,
-    });
+    // Dynamic defaults are arbitrary user-supplied code. A future managed
+    // admission denial must occur before invoking their eager factory.
+    // Disabled/unmanaged callers retain the preexisting synchronous result.
+    const resolveDefaults = () => {
+      const result = configuredDefaults({
+        requestContext: requestContext as RequestContext<TRequestContext>,
+        mastra: this.#mastra,
+      });
+      return resolveMaybePromise(result, options => {
+        if (!options) {
+          const mastraError = new MastraError({
+            id: 'AGENT_GET_DEFAULT_OPTIONS_FUNCTION_EMPTY_RETURN',
+            domain: ErrorDomain.AGENT,
+            category: ErrorCategory.USER,
+            details: {
+              agentName: this.name,
+            },
+            text: `[Agent:${this.name}] - Function-based default options returned empty value`,
+          });
+          this.logger.trackException(mastraError);
+          throw mastraError;
+        }
 
-    return resolveMaybePromise(result, options => {
-      if (!options) {
-        const mastraError = new MastraError({
-          id: 'AGENT_GET_DEFAULT_OPTIONS_FUNCTION_EMPTY_RETURN',
-          domain: ErrorDomain.AGENT,
-          category: ErrorCategory.USER,
-          details: {
-            agentName: this.name,
-          },
-          text: `[Agent:${this.name}] - Function-based default options returned empty value`,
-        });
-        this.logger.trackException(mastraError);
-        throw mastraError;
-      }
-
-      return options;
-    });
+        return options;
+      });
+    };
+    const admission = beforeCoreDynamicDefaultOptionsResolution();
+    return admission ? admission.then(resolveDefaults) : resolveDefaults();
   }
 
   /**
@@ -3639,6 +3647,10 @@ export class Agent<
       return resolveToolList(this.#tools as ToolsInput | undefined);
     }
 
+    // listTools() can be called directly, bypassing getToolsForExecution().
+    // Fence the factory itself, not only its higher-level callers.
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const result = this.#tools({
       requestContext: requestContext as RequestContext<TRequestContext>,
       mastra: this.#mastra,

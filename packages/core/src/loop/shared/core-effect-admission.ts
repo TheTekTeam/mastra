@@ -16,6 +16,7 @@ export type CoreEffectBoundary =
   | 'agent-preparation'
   | 'dynamic-model-resolution'
   | 'dynamic-tool-resolution'
+  | 'dynamic-default-options-resolution'
   | 'durable-recovery'
   | 'synchronous-clone-construction'
   | 'synchronous-thread-signal'
@@ -39,6 +40,7 @@ export const CORE_EFFECT_ADMISSION_CAPABILITY = Object.freeze({
     'agent-preparation',
     'dynamic-model-resolution',
     'dynamic-tool-resolution',
+    'dynamic-default-options-resolution',
     'durable-recovery',
     'synchronous-clone-construction',
     'synchronous-thread-signal',
@@ -117,6 +119,11 @@ export function beforeCoreDynamicToolResolution(): Promise<void> | undefined {
   return runtimeGate.beforeEffect('dynamic-tool-resolution');
 }
 
+export function beforeCoreDynamicDefaultOptionsResolution(): Promise<void> | undefined {
+  if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
+  return runtimeGate.beforeEffect('dynamic-default-options-resolution');
+}
+
 export function beforeCoreDurableRecovery(): Promise<void> | undefined {
   if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode === 'disabled') return undefined;
   return runtimeGate.beforeEffect('durable-recovery');
@@ -136,7 +143,10 @@ export class CoreSynchronousIngressGate {
   }
 
   assert(
-    boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal' | 'synchronous-nonstrict-thread-registration',
+    boundary:
+      | 'synchronous-clone-construction'
+      | 'synchronous-thread-signal'
+      | 'synchronous-nonstrict-thread-registration',
   ): void {
     if (this.#mode === 'disabled') return;
     throw new CoreEffectAdmissionDeniedError(boundary, 'synchronous route has no verified epoch reservation');
@@ -147,7 +157,10 @@ export class CoreSynchronousIngressGate {
 const runtimeSynchronousIngressGate = new CoreSynchronousIngressGate(CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode);
 
 export function assertCoreSynchronousIngress(
-  boundary: 'synchronous-clone-construction' | 'synchronous-thread-signal' | 'synchronous-nonstrict-thread-registration',
+  boundary:
+    | 'synchronous-clone-construction'
+    | 'synchronous-thread-signal'
+    | 'synchronous-nonstrict-thread-registration',
 ): void {
   runtimeSynchronousIngressGate.assert(boundary);
 }
