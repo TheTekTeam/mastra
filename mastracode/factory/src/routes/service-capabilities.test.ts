@@ -31,6 +31,22 @@ async function scenario() {
     orgId: admin.organizationId, userId: admin.workosId, factoryProjectId: project.id,
     input: { title: 'Unapproved work item', stages: ['intake'] },
   });
+  // Synthetic trusted attestation in an isolated test DB only. Production
+  // exposes no provisioning path and starts with NO lease: all effects deny.
+  await seed.storage.ops.insertOne('service_capability_handover_leases', {
+    org_id: admin.organizationId,
+    project_id: project.id,
+    owner_kind: 'factory-project-manager',
+    owner_epoch: randomUUID(),
+    automation_revision: project.automationRevision,
+    pm_dispatch_paused_at: new Date(Date.now() - 3_000),
+    native_automation_paused_at: new Date(Date.now() - 2_000),
+    native_sessions_drained_at: new Date(Date.now() - 1_000),
+    evidence_digest: 'f'.repeat(64),
+    issued_at: new Date(),
+    expires_at: new Date(Date.now() + 60_000),
+    revoked_at: null,
+  });
   const authority = new ServiceCapabilityAuthority({
     projects: seed.projects,
     storage: seed.serviceCapabilities,
@@ -166,6 +182,11 @@ describe('explicit Factory service grants: human administration and native mutat
     expect(cas.status).toBe(200);
     expect((await cas.json() as { project: { automationRevision: number } }).project.automationRevision)
       .toBe(old.automationRevision + 1);
+    // A Manager bridge must re-attest and persist the new native revision
+    // after every automation CAS. A stale attestation cannot authorize effects.
+    await s.seed.storage.ops.updateAtomic('service_capability_handover_leases', {
+      org_id: admin.organizationId, project_id: s.project.id,
+    }, () => ({ automation_revision: old.automationRevision + 1 }));
     const stale = await s.request(s.base + '/automation', 'PATCH', casBody, {
       authorization, 'x-factory-request-id': randomUUID(),
     }, null);
@@ -193,7 +214,7 @@ describe('explicit Factory service grants: human administration and native mutat
     expect(replay.status).toBe(403);
     expect((await s.seed.workItems.listDeferredDecisions(admin.organizationId, s.project.id))).toHaveLength(1);
     expect((await s.request(enqueuePath, 'POST', { ...run, skillName: 'different' },
-      { authorization }, null)).status).toBe(409);
+      { authorization }, null)).status).toBe(403);
     expect((await s.seed.serviceCapabilities.listAudit({
       orgId: admin.organizationId, projectId: s.project.id,
     })).map(e => e.outcome)).toEqual(expect.arrayContaining(['admitted', 'succeeded', 'rejected']));
@@ -213,7 +234,7 @@ describe('explicit Factory service grants: human administration and native mutat
       authorization: 'FactoryService malformed',
     }, null)).status).toBe(403);
     expect((await s.request(wrongItemPath, 'POST', run, authorized, null)).status).toBe(403);
-    expect((await s.request(path, 'POST', { ...run, role: 'admin' }, authorized, null)).status).toBe(403);
+    expect((await s.request(path, 'POST', { ...run, role: 'plan' }, authorized, null)).status).toBe(403);
     expect((await s.request(path, 'POST', { ...run, skillName: 'sensitive-skill' },
       authorized, null)).status).toBe(403);
     expect((await s.request(path, 'POST', { ...run, arguments: 'unsanctioned' },
@@ -233,6 +254,37 @@ describe('explicit Factory service grants: human administration and native mutat
     expect(revoked.status).toBe(200);
     expect((await s.request(path, 'POST', run, authorized, null)).status).toBe(403);
     expect(await s.seed.workItems.listDeferredDecisions(admin.organizationId, s.project.id)).toHaveLength(0);
+  });
+
+  it('denies service effects on missing, expired, revoked, wrong-owner or stale-revision handover', async () => {
+    for (const kind of ['missing', 'expired', 'revoked', 'wrong-owner', 'stale-revision']) {
+      const s = await scenario();
+      const grant = await s.issue();
+      const key = { org_id: admin.organizationId, project_id: s.project.id };
+      if (kind === 'missing') {
+        await s.seed.storage.ops.deleteMany('service_capability_handover_leases', key);
+      } else {
+        await s.seed.storage.ops.updateAtomic('service_capability_handover_leases', key, () => ({
+          ...(kind === 'expired' ? { expires_at: new Date(Date.now() - 1_000) } : {}),
+          ...(kind === 'revoked' ? { revoked_at: new Date() } : {}),
+          ...(kind === 'wrong-owner' ? { owner_kind: 'untrusted-app' } : {}),
+          ...(kind === 'stale-revision' ? { automation_revision: 999 } : {}),
+        }));
+      }
+      const response = await s.request(s.base + '/automation', 'PATCH', {
+        expectedAutomationRevision: s.project.automationRevision,
+        expectedAutoRunEnabled: s.project.autoRunEnabled,
+        expectedAutoApprovePlans: s.project.autoApprovePlans,
+        autoRunEnabled: true, autoApprovePlans: false,
+      }, {
+        authorization: 'FactoryService ' + grant.token,
+        'x-factory-request-id': randomUUID(),
+      }, null);
+      expect(response.status, kind).toBe(403);
+      expect((await s.seed.projects.get({
+        orgId: admin.organizationId, id: s.project.id,
+      }))?.automationRevision).toBe(s.project.automationRevision);
+    }
   });
 
   it('fails closed before effect on admission journal failure and reports EFFECT_UNVERIFIED after committed effect', async () => {
