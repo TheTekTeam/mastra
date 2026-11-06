@@ -289,7 +289,12 @@ describe('native service capability grant authority', () => {
     expect(await seed.serviceCapabilities.listUnsettledEffectLeases({
       orgId: 'verified-org', projectId: project.id,
     })).toHaveLength(1);
-    await authority.finish(admitted.admission, 'succeeded');
+    await authority.finish(admitted.admission, 'effect_unverified', 'awaiting_independent_native_receipt');
+    expect(await seed.serviceCapabilities.listUnsettledEffectLeases({
+      orgId: 'verified-org', projectId: project.id,
+    })).toHaveLength(1);
+    // Only independently reconciled outcomes may settle an uncertain lease.
+    await authority.finish(admitted.admission, 'succeeded', 'native_receipt_verified');
     expect(await seed.serviceCapabilities.listUnsettledEffectLeases({
       orgId: 'verified-org', projectId: project.id,
     })).toHaveLength(0);
