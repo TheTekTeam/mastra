@@ -203,6 +203,14 @@ export class ServiceCapabilityStorage extends FactoryStorageDomain {
     super('service-capabilities');
   }
 
+  async dangerouslyClearAll(): Promise<void> {
+    await this.storage.withTransaction(async ops => {
+      await ops.deleteMany('service_capability_audit', {});
+      await ops.deleteMany('service_capability_consents', {});
+      await ops.deleteMany('service_capability_grants', {});
+    });
+  }
+
   async init(): Promise<void> {
     await this.ensureCollections([
       SERVICE_CAPABILITY_GRANTS_SCHEMA,
