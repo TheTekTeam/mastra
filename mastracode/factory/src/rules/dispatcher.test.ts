@@ -6702,6 +6702,127 @@ describe('a skill run that ends in error (#27740)', () => {
     await resumed.stop();
   });
 
+  it('stores exact provider/credential attribution and uses only a native approved alternate on due resume', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill', role: 'work', skillName: 'understand-issue',
+      idempotencyKey: 'quota-native-approved-fallback',
+    });
+    await bindWorkRun(storage, item.id);
+    const scope = {
+      factoryProjectId: PROJECT_ID, factoryOrgId: 'org-1',
+      factoryModelScope: 'user', factoryOwnerUserId: 'user-1',
+    };
+    const error = Object.assign(new Error('Provider quota exhausted'), {
+      name: 'APICallError', statusCode: 402, requestBodyValues: { model: 'claude-opus' },
+    });
+    const exhausted = createSession(undefined, { agentEndReason: 'error', runError: error });
+    vi.mocked(exhausted.session.model.get).mockReturnValue('anthropic/claude-opus');
+    vi.mocked(exhausted.session.state.get).mockReturnValue(scope as never);
+    const initial = new FactoryDecisionDispatcher({
+      controller: exhausted.controller as never, transitionService, storage,
+      ownerId: 'source-worker', isAutoRunEnabled: async () => true,
+      staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+    });
+    const start = new Date('2030-01-01T00:00:00Z');
+    await initial.runOnce(start);
+    const [paused] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(paused).toMatchObject({
+      status: 'quota_paused', quotaSource: {
+        providerId: 'anthropic', modelId: 'anthropic/claude-opus',
+        credentialScope: 'user', ownerUserId: 'user-1',
+        branch: 'factory/issue-1',
+        workItemRevision: (await storage.get({ orgId: 'org-1', id: item.id }))!.revision,
+      },
+    });
+
+    const healthy = createSession(undefined, { agentEndReason: 'complete' });
+    let modelId = 'anthropic/claude-opus';
+    vi.mocked(healthy.session.model.get).mockImplementation(() => modelId);
+    vi.mocked(healthy.session.state.get).mockReturnValue(scope as never);
+    const switchModel = vi.fn(async (next: string) => { modelId = next; });
+    Object.assign(healthy.session.model, { switch: switchModel });
+    const resolver = vi.fn(async (request: import('./quota-fallback.js').FactoryQuotaFallbackRequest) => ({
+      orgId: request.orgId, factoryProjectId: request.factoryProjectId,
+      workItemId: request.workItemId, workItemRevision: request.workItemRevision,
+      bindingId: request.bindingId, threadId: request.threadId, branch: request.branch,
+      modelId: 'openai/gpt-6', credentialScope: 'user' as const, ownerUserId: 'user-1',
+      projectPolicyApproved: true as const, capabilityVerified: true as const,
+      credentialVerified: true as const, headVerified: true as const,
+      existingEntitlementVerified: true as const,
+    }));
+    const restarted = new FactoryDecisionDispatcher({
+      controller: healthy.controller as never, transitionService, storage,
+      ownerId: 'resume-worker', isAutoRunEnabled: async () => true,
+      resolveQuotaFallback: resolver,
+      staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+    });
+    await restarted.runOnce(new Date(paused!.availableAt.getTime() - 1));
+    expect(resolver).not.toHaveBeenCalled();
+    await restarted.runOnce(new Date(paused!.availableAt.getTime() + 1));
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(switchModel).toHaveBeenCalledExactlyOnceWith('openai/gpt-6');
+    expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({
+      status: 'succeeded',
+    });
+  });
+
+  it.each([
+    ['missing request-model attribution', undefined, false, false],
+    ['different subagent model', 'gpt-other', false, false],
+    ['untrusted tool-shaped 402', 'claude-opus', false, true],
+    ['denied credential fallback', 'claude-opus', true, false],
+  ])('fails closed on %s', async (_reason, requestedModel, denyCredential, untrustedError) => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill', role: 'work', skillName: 'understand-issue',
+      idempotencyKey: 'quota-native-denied-' + String(requestedModel),
+    });
+    await bindWorkRun(storage, item.id);
+    const scope = {
+      factoryProjectId: PROJECT_ID, factoryOrgId: 'org-1',
+      factoryModelScope: 'user', factoryOwnerUserId: 'user-1',
+    };
+    const runError = Object.assign(new Error('Provider quota exhausted'), {
+      name: untrustedError ? 'Error' : 'APICallError', statusCode: 402,
+      ...(requestedModel ? { requestBodyValues: { model: requestedModel } } : {}),
+    });
+    const exhausted = createSession(undefined, { agentEndReason: 'error', runError });
+    vi.mocked(exhausted.session.model.get).mockReturnValue('anthropic/claude-opus');
+    vi.mocked(exhausted.session.state.get).mockReturnValue(scope as never);
+    await new FactoryDecisionDispatcher({
+      controller: exhausted.controller as never, transitionService, storage,
+      ownerId: 'source-worker', isAutoRunEnabled: async () => true,
+      staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+    }).runOnce(new Date('2030-01-01T00:00:00Z'));
+    const [paused] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(paused?.quotaSource === null).toBe(!denyCredential);
+
+    const healthy = createSession(undefined, { agentEndReason: 'complete' });
+    vi.mocked(healthy.session.model.get).mockReturnValue('anthropic/claude-opus');
+    vi.mocked(healthy.session.state.get).mockReturnValue(scope as never);
+    const switchModel = vi.fn(async () => {});
+    Object.assign(healthy.session.model, { switch: switchModel });
+    const resolver = vi.fn(async (request: import('./quota-fallback.js').FactoryQuotaFallbackRequest) => ({
+      orgId: request.orgId, factoryProjectId: request.factoryProjectId,
+      workItemId: request.workItemId, workItemRevision: request.workItemRevision,
+      bindingId: request.bindingId, threadId: request.threadId, branch: request.branch,
+      modelId: 'openai/gpt-6', credentialScope: 'user' as const, ownerUserId: 'user-1',
+      projectPolicyApproved: true as const, capabilityVerified: true as const,
+      credentialVerified: !denyCredential, headVerified: true as const,
+      existingEntitlementVerified: true as const,
+    }));
+    await new FactoryDecisionDispatcher({
+      controller: healthy.controller as never, transitionService, storage,
+      ownerId: 'resume-worker', isAutoRunEnabled: async () => true,
+      resolveQuotaFallback: resolver,
+      staleBindingTtlMs: Number.MAX_SAFE_INTEGER,
+    }).runOnce(new Date(paused!.availableAt.getTime() + 1));
+    expect(resolver).toHaveBeenCalledTimes(denyCredential ? 1 : 0);
+    expect(switchModel).not.toHaveBeenCalled();
+    expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({ status: 'succeeded' });
+  });
+
   it('keeps genuine engineering failures counted across a quota pause', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const { item, transitionService } = await queueDecision(storage, {

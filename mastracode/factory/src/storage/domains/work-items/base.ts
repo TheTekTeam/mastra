@@ -254,6 +254,17 @@ export type FactoryEnqueueReceiptLookup =
   | { kind: 'found'; receipt: FactoryEnqueueReceipt }
   | { kind: 'missing' | 'ambiguous' };
 
+/** Non-secret, exact-run attribution; absent unless a provider request named the active model. */
+export interface FactoryQuotaSource {
+  providerId: string;
+  modelId: string;
+  credentialScope: 'factory' | 'user';
+  ownerUserId: string;
+  bindingId: string;
+  branch: string;
+  workItemRevision: number;
+}
+
 export interface FactoryDeferredDecisionRecord {
   id: string;
   orgId: string;
@@ -271,6 +282,7 @@ export interface FactoryDeferredDecisionRecord {
   deliveryGeneration: number;
   failureOccurrence: number;
   quotaPauses: number;
+  quotaSource: FactoryQuotaSource | null;
   availableAt: Date;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -430,6 +442,7 @@ export interface FactoryPendingStartRecord {
   status: 'pending' | 'leased' | 'retry' | 'quota_paused' | 'sent' | 'failed';
   attempts: number;
   quotaPauses: number;
+  quotaSource: FactoryQuotaSource | null;
   availableAt: Date;
   leaseOwner: string | null;
   leaseExpiresAt: Date | null;
@@ -467,6 +480,7 @@ export interface FactoryDispatchFailureInput extends FactoryLeaseIdentity {
   terminal: boolean;
   /** A verified provider quota failure parks the effect without spending its ordinary retry budget. */
   quotaPaused?: boolean;
+  quotaSource?: FactoryQuotaSource | null;
   advanceDeliveryGeneration?: boolean;
 }
 
@@ -1050,6 +1064,7 @@ const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
       delivery_generation: { type: 'integer', default: 0 },
       failure_occurrence: { type: 'integer', default: 0 },
       quota_pauses: { type: 'integer', default: 0 },
+      quota_source: { type: 'json', nullable: true },
       available_at: { type: 'timestamp' },
       lease_owner: { type: 'text', nullable: true },
       lease_expires_at: { type: 'timestamp', nullable: true },
@@ -1167,6 +1182,7 @@ const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
       status: { type: 'text' },
       attempts: { type: 'integer' },
       quota_pauses: { type: 'integer', default: 0 },
+      quota_source: { type: 'json', nullable: true },
       available_at: { type: 'timestamp' },
       lease_owner: { type: 'text', nullable: true },
       lease_expires_at: { type: 'timestamp', nullable: true },
@@ -1228,6 +1244,7 @@ function toDeferredDecision(row: GovernanceDbRow): FactoryDeferredDecisionRecord
     deliveryGeneration: Number(row.delivery_generation ?? 0),
     failureOccurrence: Number(row.failure_occurrence ?? 0),
     quotaPauses: Number(row.quota_pauses ?? 0),
+    quotaSource: (row.quota_source as FactoryQuotaSource | null) ?? null,
     availableAt: row.available_at as Date,
     leaseOwner: (row.lease_owner as string | null) ?? null,
     leaseExpiresAt: (row.lease_expires_at as Date | null) ?? null,
@@ -1299,6 +1316,7 @@ function toPendingStart(row: GovernanceDbRow): FactoryPendingStartRecord {
     status: row.status as FactoryPendingStartRecord['status'],
     attempts: Number(row.attempts),
     quotaPauses: Number(row.quota_pauses ?? 0),
+    quotaSource: (row.quota_source as FactoryQuotaSource | null) ?? null,
     availableAt: row.available_at as Date,
     leaseOwner: (row.lease_owner as string | null) ?? null,
     leaseExpiresAt: (row.lease_expires_at as Date | null) ?? null,
@@ -1566,6 +1584,7 @@ export class WorkItemsStorage extends FactoryStorageDomain {
         return {
           status: input.quotaPaused ? 'quota_paused' : input.terminal ? 'failed' : 'retry',
           ...(input.quotaPaused ? { quota_pauses: Number(current.quota_pauses ?? 0) + 1 } : {}),
+          quota_source: input.quotaPaused ? (input.quotaSource ?? null) : null,
           ...(table === 'factory_deferred_decisions' && !input.terminal && input.advanceDeliveryGeneration !== false
             ? { delivery_generation: Number(current.delivery_generation ?? 0) + 1 }
             : {}),
