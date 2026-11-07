@@ -1,6 +1,8 @@
+import { FactoryGpPgNativeScopeAttestorV1, FACTORY_GP_PG_NATIVE_SCOPE_ATTESTOR_CAPABILITY }
+  from './gp-pg-native-scope-attestor.js';
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
-import { createHash, generateKeyPairSync, randomUUID, sign, X509Certificate } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomInt, randomUUID, sign, X509Certificate } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,12 +37,12 @@ function certificate(dir:string,name:string){
     '-addext','subjectAltName=DNS:'+name],{stdio:'ignore'});
   return {key:readFileSync(key),cert:readFileSync(cert)};
 }
-function makeScope(projectId:string):GpHandoverScope {
+function makeScope(projectId:string,factoryOrgId:string):GpHandoverScope {
   return {
     consentRequestId:randomUUID(),manifestId:sha('manifest'+randomUUID()),
     nonceSha256:sha('nonce'+randomUUID()),projectId,
-    factoryOrgId:'native-opaque-org-gp',repositoryId:1208128934,
-    repositoryOwnerId:278831585,appInstallationId:827331,
+    factoryOrgId,repositoryId:randomInt(1_000_000,1_000_000_000),
+    repositoryOwnerId:278831585,appInstallationId:randomInt(1_000_000,1_000_000_000),
     writerOwnerId:'pm-gp-private-writer',writerEpoch:7,
     ownerEpoch:'B1-native-opaque-owner',authorityRevision:4,
     policyDigest:sha('policy'),scopeDigest:sha('scope'),
@@ -146,11 +148,12 @@ async function fixture(){
     })
   }));
   await storage.init();
+  const orgId='native-opaque-org-'+randomUUID();
   const project=await projects.create({
-    orgId:'native-opaque-org-gp',userId:'gp-native-test-owner',
+    orgId,userId:'gp-native-test-owner',
     input:{name:'HTAI mTLS '+randomUUID()}
   });
-  const s=makeScope(project.id),now=new Date();
+  const s=makeScope(project.id,orgId),now=new Date();
   const install=await storage.ops.insertOne('source_control_installations',{
     org_id:s.factoryOrgId,integration_id:'github',connected_by_user_id:'gp-native-test-owner',
     external_id:String(s.appInstallationId),provider_metadata:{},created_at:now
@@ -184,7 +187,7 @@ async function fixture(){
     key:pmCert.key.toString(),
     serverPin:new X509Certificate(factoryCert.cert).fingerprint256.replaceAll(':','').toLowerCase()
   };
-  return {s,client,packet:signed(s,privateKey),storage,ingress,dir,
+  return {s,client,packet:signed(s,privateKey),storage,issuer,ingress,dir,
     dispose:async()=>{await ingress.close();await storage.close();
       rmSync(dir,{recursive:true,force:true});}};
 }
@@ -221,6 +224,105 @@ describe('Factory default-off GP PG mutual TLS ingress',()=>{
       expect(revokedReceipt.body.status).toBe('revoked');
       const after=await remoteWorker({...f.client,body});
       expect(after.body.status).toBe('denied');
+    }finally{await f.dispose();}
+  });
+});
+describe('Factory-native GP B1/B2/App scope attestor source',()=>{
+  it('is unmounted and refuses missing private authority',()=>{
+    expect(FACTORY_GP_PG_NATIVE_SCOPE_ATTESTOR_CAPABILITY).toMatchObject({
+      installed:false,enabledByDefault:false,productionReady:false,
+      trustedGpSessionProviderInstalled:false
+    });
+    expect(new FactoryGpPgNativeScopeAttestorV1()).toBeDefined();
+    expect(()=>new FactoryGpPgNativeScopeAttestorV1({enabled:true}))
+      .toThrow(/REAL_PG_SERVER_TRUST_REQUIRED/);
+  });
+  it.skipIf(!pgUrl)('signs actual isolated PG18 epoch/project/App binding only with server-held Ed25519 and fresh GP proof',async()=>{
+    const f=await fixture();
+    const keys=generateKeyPairSync('ed25519');
+    const trusted=Object.freeze({privateTest:Symbol('Factory-native-PG')});
+    const options={
+      enabled:true,storage:f.storage,privateKey:keys.privateKey,
+      keyId:'factory-native-test-pinned',
+      resolvePrivateScope:async(ctx:object)=>ctx===trusted?f.s:null,
+      readAuthenticatedPmV8:async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
+        const now=(await ops.databaseNow!()).getTime();
+        return {
+          source:'authenticated_current_pm_gp_v8_preconsent_v1' as const,
+          actor:'gp' as const,sessionVerified:true as const,
+          csrfVerified:true as const,consentUnrevoked:true as const,
+          projectSelected:true as const,writerPaused:true as const,
+          dispatchPending:0 as const,factoryOrgId:s.factoryOrgId,projectId:s.projectId,
+          consentRequestId:s.consentRequestId,manifestId:s.manifestId,
+          nonceSha256:s.nonceSha256,writerOwnerId:s.writerOwnerId,
+          writerEpoch:s.writerEpoch,ownerEpoch:s.ownerEpoch,
+          authorityRevision:s.authorityRevision,policyDigest:s.policyDigest,
+          verifiedAtMs:now,writerLeaseExpiresAtMs:now+30000
+        };
+      },
+      readNativeDrain:async(_ops:unknown,s:GpHandoverScope)=>({
+        source:'factory_pg_same_transaction_drain_v1' as const,
+        projectId:s.projectId,factoryOrgId:s.factoryOrgId,
+        coverageArmed:true as const,mappingDigest:s.mappingDigest,
+        coverageVersion:s.coverageVersion,
+        runningCount:0 as const,parkedCount:0 as const,pendingCount:0 as const,
+        unknownCount:0 as const,unsettledEffectCount:0 as const,
+        remoteExecutionSupported:false as const
+      }),
+      readLiveAppGrant:async(ops:FactoryStorageOps,s:GpHandoverScope,binding:{
+        projectRepositoryLinkId:string;connectionId:string;
+        repositoryRecordId:string;installationRecordId:string
+      })=>({
+        source:'authenticated_github_app_grant_v1' as const,
+        grantActive:true as const,factoryOrgId:s.factoryOrgId,projectId:s.projectId,
+        repositoryId:s.repositoryId,repositoryOwnerId:s.repositoryOwnerId,
+        appInstallationId:s.appInstallationId!,...binding,
+        verifiedAtMs:(await ops.databaseNow!()).getTime()
+      })
+    };
+    try{
+      const attestor=new FactoryGpPgNativeScopeAttestorV1(options);
+      expect(await attestor.attest(Object.freeze({other:true}))).toBeNull();
+      const signed=await attestor.attest(trusted);
+      expect(signed?.alg).toBe('Ed25519');
+      expect(signed?.payload?.scopeTupleSha256).toBe(gpV9ScopeTupleDigest(f.s));
+      const {verify}=await import('node:crypto');
+      const data=Buffer.concat([Buffer.from('FACTORY_PG_TO_PM_SCOPE_ATTESTATION_V1\0'),
+        Buffer.from(canonical(signed!.payload))]);
+      expect(verify(null,data,keys.publicKey,Buffer.from(signed!.signature,'base64url')))
+        .toBe(true);
+      // Independent OS-process mTLS request reaches signed native PostgreSQL
+      // scope attestation. Positive trust callbacks exist only in this test.
+      const serverKey=readFileSync(join(f.dir,'factory.local.key'));
+      const serverCert=readFileSync(join(f.dir,'factory.local.pem'));
+      const clientCert=readFileSync(join(f.dir,'pm.local.pem'));
+      const tlsIngress=new FactoryGpPgPrivateMtlsIngress({
+        enabled:true,serverKey,serverCert,clientCa:clientCert,
+        pinnedClientCertSha256:new X509Certificate(clientCert).fingerprint256
+          .replaceAll(':','').toLowerCase(),
+        readAuthenticatedGpRevoke:async()=>null
+      });
+      const wireAttestor=new FactoryGpPgNativeScopeAttestorV1({
+        ...options,resolvePrivateScope:tlsIngress.resolvePrivateNativeScope
+      });
+      try{
+        const {port}=await tlsIngress.listen(f.issuer,wireAttestor);
+        const wire=await remoteWorker({...f.client,port,path:'native-scope',body:{
+          version:'factory_gp_pg_native_scope_request_v1',scope:f.s
+        }});
+        expect(wire.http).toBe(200);
+        const packet=wire.body as unknown as NonNullable<typeof signed>;
+        expect(packet.payload.scopeTupleSha256).toBe(gpV9ScopeTupleDigest(f.s));
+        expect(verify(null,Buffer.concat([
+          Buffer.from('FACTORY_PG_TO_PM_SCOPE_ATTESTATION_V1\0'),
+          Buffer.from(canonical(packet.payload))
+        ]),keys.publicKey,Buffer.from(packet.signature,'base64url'))).toBe(true);
+      }finally{await tlsIngress.close();}
+      const mismatched=new FactoryGpPgNativeScopeAttestorV1({
+        ...options,resolvePrivateScope:async()=>({...f.s,
+          appInstallationId:f.s.appInstallationId!+1})
+      });
+      expect(await mismatched.attest(trusted)).toBeNull();
     }finally{await f.dispose();}
   });
 });
