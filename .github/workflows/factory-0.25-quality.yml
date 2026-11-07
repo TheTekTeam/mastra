@@ -1,0 +1,297 @@
+name: Factory 0.25 Exact-Head Quality
+
+# Dedicated fork-safe CI. Upstream Changed Test Gate intentionally skips
+# repositories other than mastra-ai/mastra; this check executes PR-head code.
+on:
+  pull_request:
+    branches:
+      - ci/factory-0.25-free-docs-runner-20261103
+      - ci/factory-0.25-trusted-quality-gate-20261103
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+    paths:
+      - 'mastracode/factory/**'
+      - 'packages/playground-ui/**'
+      - 'packages/core/src/llm/model/**'
+      - 'packages/core/src/loop/shared/**'
+      - 'packages/core/src/loop/workflows/agentic-execution/**'
+      - 'packages/core/src/agent/durable/workflows/steps/**'
+      - 'packages/core/src/stream/aisdk/v5/**'
+      - 'mastracode/web/src/mastra/index.ts'
+      - 'mastracode/web/src/mastra/index.test.ts'
+      - 'mastracode/web/scripts/verify-better-auth-pg18.mjs'
+      - 'mastracode/web/scripts/stage-source-factory-for-ci.mjs'
+      - 'mastracode/web/SELF_HOSTED_BETTER_AUTH_POLICY.md'
+      - 'mastracode/web/package.json'
+      - 'mastracode/web/pnpm-lock.yaml'
+      - 'packages/cli/src/commands/api/factory-route-metadata.generated.ts'
+      - 'stores/pg/**'
+      - '.changeset/**'
+      - '.github/workflows/factory-0.25-quality.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: factory-0.25-quality-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  factory-exact-head:
+    name: Factory 0.25 exact-head build, typecheck, lint and tests
+    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == 'TheTekTeam/mastra' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: 'true'
+      NODE_OPTIONS: --max-old-space-size=8192
+      TURBO_CACHE: local:rw
+    services:
+      postgres18:
+        image: postgres@sha256:300ebd02c6d4de9ee27ad7f6855d5d21b4d3a4a5117767c1197d284c635d9736
+        env:
+          POSTGRES_USER: factory_a0_ci
+          POSTGRES_PASSWORD: a0_ci_disposable_only
+          POSTGRES_DB: factory_a0_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U factory_a0_ci -d factory_a0_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout immutable PR head
+        uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+        timeout-minutes: 15
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 2
+          filter: blob:none
+          persist-credentials: false
+
+      - name: Verify exact head identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          printf 'Exact PR head: %s\n' "$EXPECTED_HEAD"
+
+      - name: Setup pinned Node and pnpm
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+          package-manager-cache: 'false'
+
+      - name: Install frozen Factory dependency closure
+        timeout-minutes: 12
+        run: |
+          pnpm install --frozen-lockfile --ignore-scripts \
+            --filter '@mastra/factory...' \
+            --filter '@mastra/playground-ui...' \
+            --filter '@mastra/auth-better-auth...' \
+            --filter '@mastra/auth-workos...' \
+            --filter '@mastra/e2b...' \
+            --filter '@mastra/redis-streams...' \
+            --filter '@mastra/pg...' \
+            --filter '@mastra/libsql...' \
+            --filter '@mastra/platform-workspace...' \
+            --filter '@mastra/code-sdk...' \
+            --filter '@mastra/client-js...' \
+            --filter '@mastra/hono...' \
+            --filter 'mastra...'
+
+      - name: Build Factory and Playground UI dependency graph
+        timeout-minutes: 22
+        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/playground-ui^...' --filter='@mastra/auth-better-auth...' --concurrency=2
+
+      - name: Build Factory package
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory build:lib
+
+      - name: Verify B2b public declarations exclude dev-only PG package
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          declaration=mastracode/factory/dist/storage/domains/execution-origin/reconcile.d.ts
+          test -s "$declaration"
+          if grep -n -F '@mastra/pg' "$declaration"; then
+            echo '::error::Factory public B2b declarations reference dev-only @mastra/pg'
+            exit 1
+          fi
+
+      - name: Verify deterministic generated Factory CLI route metadata
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          manifest=packages/cli/src/commands/api/factory-route-metadata.generated.ts
+          before="$(sha256sum "$manifest" | awk '{print $1}')"
+          pnpm --filter @mastra/factory generate:api-cli-route-metadata
+          after="$(sha256sum "$manifest" | awk '{print $1}')"
+          test "$before" = "$after"
+          git diff --exit-code -- "$manifest"
+
+      - name: Factory TypeScript check
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory exec tsc --noEmit -p tsconfig.json
+
+      - name: Factory type-aware lint
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/factory exec oxlint --type-aware .
+
+      - name: Playground UI declarations and regression tests (exact PR head)
+        timeout-minutes: 10
+        env:
+          PLAYGROUND_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PLAYGROUND_EXPECTED_HEAD"
+          pnpm --filter @mastra/playground-ui build
+          pnpm --filter @mastra/playground-ui exec vitest run \
+            src/lib/resize/collapsible-panel.test.tsx \
+            src/domains/memory/components/__tests__/flame-graph.test.tsx \
+            --reporter=json --outputFile="$RUNNER_TEMP/playground-ui.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests < 67 || result.numPassedTests !== result.numTotalTests ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("Playground UI declarations or regression test coverage skipped or failed");
+            }
+            console.log("Playground UI exact-head: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/playground-ui.json"
+
+      - name: Core A2 TypeScript check
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/core exec tsc --noEmit -p tsconfig.json
+
+      - name: Core A2 model tool and legacy effect checkpoints (exact head, no skips)
+        timeout-minutes: 10
+        env:
+          CORE_A2_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$CORE_A2_EXPECTED_HEAD"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/execution-epochs/pre-effect-capability.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-core-a2.json" --maxWorkers=1
+          pnpm --filter @mastra/core exec vitest run \
+            src/llm/model/legacy-effect-boundary.test.ts \
+            src/loop/shared/core-effect-admission.test.ts \
+            src/loop/shared/core-effect-engine-denial.test.ts \
+            src/loop/shared/core-effect-model-denial.test.ts \
+            src/agent/durable/__tests__/core-durable-model-denial.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/core-a2.json" --maxWorkers=1
+          node -e '
+            const fs = require("node:fs");
+            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 20, "Core"]]) {
+              const r = JSON.parse(fs.readFileSync(path, "utf8"));
+              if (r.numTotalTests !== count || r.numPassedTests !== count ||
+                  r.numPendingTests !== 0 || r.numFailedTests !== 0) {
+                throw new Error(label + " A2 exact-head test coverage skipped or failed");
+              }
+              console.log(label + " A2 exact-head: " + r.numPassedTests + "/" + r.numTotalTests + " passed");
+            }
+          ' "$RUNNER_TEMP/factory-core-a2.json" "$RUNNER_TEMP/core-a2.json"
+
+      - name: Factory App issue evidence and project-binding grant revocation (no skips)
+        timeout-minutes: 8
+        env:
+          APP_EVIDENCE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$APP_EVIDENCE_EXPECTED_HEAD"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/routes/source-control-app-evidence.test.ts \
+            src/routes/surface.test.ts \
+            src/routes/contracts.test.ts \
+            src/routes/source-control-settings.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-app-evidence.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests < 70 || result.numPassedTests !== result.numTotalTests ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("Factory App evidence route tests skipped, missing or failed");
+            }
+            console.log("Factory App evidence and project-binding routes: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/factory-app-evidence.json"
+
+      - name: A0 PostgreSQL 18 guarded-thread integration (exact head, no skipped tests)
+        timeout-minutes: 8
+        env:
+          A0_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          A0_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$A0_EXPECTED_HEAD"
+          test -n "$A0_PG_URL"
+          pnpm --filter @mastra/pg exec vitest run \
+            src/storage/domains/memory/thread-persistence-guard.test.ts \
+            --reporter=verbose --maxWorkers=1
+
+      - name: B1b and B2b real PG18 transactional security regressions (no skips)
+        timeout-minutes: 8
+        env:
+          B1B_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          B1B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+          B2B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$B1B_EXPECTED_HEAD"
+          test -n "$B1B_PG_URL" && test -n "$B2B_PG_URL"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/execution-epochs/settlement.test.ts \
+            src/storage/domains/execution-origin/reconcile.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-b1b-b2b-pg18.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests !== 11 || result.numPassedTests !== 11 ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("B1b/B2b PG18 tests skipped or failed");
+            }
+            console.log("B1b/B2b PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/factory-b1b-b2b-pg18.json"
+
+      - name: Factory receipt, skill and dispatcher regressions
+        timeout-minutes: 12
+        run: |
+          pnpm --filter @mastra/factory exec vitest run \
+            src/routes/automation-runs.test.ts \
+            src/workspace.test.ts \
+            src/workspace-skills.test.ts \
+            src/skills/service.test.ts \
+            src/routes/skills.test.ts \
+            src/rules/dispatcher.test.ts \
+            src/rules/dispatch-errors.test.ts \
+            --reporter=dot --maxWorkers=1
+
+      - name: Verify self-hosted Better Auth operator sign-in composition
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          pnpm --dir mastracode/web install --frozen-lockfile --ignore-scripts
+          pnpm --dir mastracode/web run prebuild
+          pnpm --dir mastracode/web run build
+          test -s mastracode/web/.mastra/output/mastra.mjs
+          pnpm --dir mastracode/web exec vitest run src/mastra/index.test.ts --reporter=dot --maxWorkers=1
+
+      - name: Verify default-deny signup, existing login and native receipt with disposable PostgreSQL 18 HTTP
+        timeout-minutes: 16
+        env:
+          FACTORY_QA_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FACTORY_QA_EXPECTED_HEAD"
+          mkdir -p "$RUNNER_TEMP/factory-pg18-pack"
+          (cd mastracode/factory && npm_config_ignore_scripts=true pnpm pack --pack-destination "$RUNNER_TEMP/factory-pg18-pack" >/dev/null)
+          tarball="$RUNNER_TEMP/factory-pg18-pack/mastra-factory-0.25.0.tgz"
+          test -s "$tarball"
+          tar -xOf "$tarball" package/package.json | node -e 'let s="";process.stdin.on("data",x=>s+=x);process.stdin.on("end",()=>{const p=JSON.parse(s);if(p.name!=="@mastra/factory"||p.version!=="0.25.0"||Object.values(p.dependencies??{}).some(v=>typeof v==="string"&&v.startsWith("workspace:")))process.exit(1)})'
+          node mastracode/web/scripts/stage-source-factory-for-ci.mjs "$tarball" "$FACTORY_QA_EXPECTED_HEAD"
+          node mastracode/web/scripts/verify-better-auth-pg18.mjs
