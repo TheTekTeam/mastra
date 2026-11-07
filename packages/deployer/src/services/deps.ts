@@ -10,6 +10,7 @@ import type { PackageJson } from 'type-fest';
 import { parse, stringify } from 'yaml';
 
 import { createChildProcessLogger } from '../deploy/log.js';
+import { getApprovedImmutableRelease, verifyImmutableBuildInputs } from './immutable-release.js';
 
 type PackageManager = 'npm' | 'yarn' | 'pnpm' | 'bun';
 
@@ -747,7 +748,7 @@ export class Deps extends MastraBase {
   private getPackageManagerCommand(
     pm: PackageManager,
     type: 'install' | 'add',
-    { yarnClassic = false }: { yarnClassic?: boolean } = {},
+    { yarnClassic = false, immutable = false }: { yarnClassic?: boolean; immutable?: boolean } = {},
   ): string {
     const cmd = type === 'install' ? 'install' : 'add';
 
@@ -757,7 +758,11 @@ export class Deps extends MastraBase {
       case 'yarn':
         return type === 'install' && !yarnClassic ? `${cmd} --no-immutable` : cmd;
       case 'pnpm':
-        return type === 'install' ? `${cmd} --no-frozen-lockfile --loglevel=error` : `${cmd} --loglevel=error`;
+        return type === 'install'
+          ? immutable
+            ? `${cmd} --frozen-lockfile --offline --ignore-scripts --loglevel=error`
+            : `${cmd} --no-frozen-lockfile --loglevel=error`
+          : `${cmd} --loglevel=error`;
       default:
         return cmd;
     }
@@ -769,16 +774,35 @@ export class Deps extends MastraBase {
     pnpmOverrides,
     pnpmNodeLinker,
     pnpmWorkspaceSettings,
+    immutableReleaseId,
   }: {
     dir?: string;
     architecture?: ArchitectureOptions;
     pnpmOverrides?: Record<string, string>;
     pnpmNodeLinker?: 'hoisted';
     pnpmWorkspaceSettings?: BundlerConfig['pnpmWorkspaceSettings'];
+    /** Explicit, independently approved Factory immutable build only. Default OFF. */
+    immutableReleaseId?: string;
   } = {}) {
     const pm = this.packageManager;
+    const immutable = immutableReleaseId !== undefined;
+    if (immutable) {
+      if (pm !== 'pnpm') throw new Error('IMMUTABLE_INSTALL_REQUIRES_PNPM');
+      const approved = await getApprovedImmutableRelease(immutableReleaseId);
+      if (path.resolve(this.rootDir) !== approved.projectRoot ||
+          ![approved.runtimeRoot, approved.outputRoot].includes(path.resolve(dir))) {
+        throw new Error('IMMUTABLE_INSTALL_ROOT_NOT_APPROVED');
+      }
+      // Must fail before source lock copy, importer overrides, workspace config or network.
+      await verifyImmutableBuildInputs({
+        approved,
+        sourceRoot: approved.sourceRoot,
+        runtimeRoot: approved.runtimeRoot,
+        outputRoot: approved.outputRoot,
+      });
+    }
     let yarnClassic = false;
-    if (this.lockFile) {
+    if (this.lockFile && !immutable) {
       const destination = path.join(dir, this.lockFile.filename);
       if (path.resolve(this.lockFile.path) !== path.resolve(destination)) {
         const packedBunWorkspaces =
@@ -806,7 +830,7 @@ export class Deps extends MastraBase {
       }
     }
 
-    const installCommand = this.getPackageManagerCommand(pm, 'install', { yarnClassic });
+    const installCommand = this.getPackageManagerCommand(pm, 'install', { yarnClassic, immutable });
     let args: string[] = [];
 
     switch (pm) {
