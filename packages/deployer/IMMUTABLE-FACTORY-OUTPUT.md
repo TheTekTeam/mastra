@@ -106,13 +106,61 @@ monorepo globalSetup:
 node --test packages/deployer/factory-immutable-two-builds.test.mjs
 ```
 
-**Remaining prerequisite:** a separately accepted deterministic candidate
-_producer_ must construct the two roots, build/pack the entire recursive
-first-party closure (currently runtime 30, output 27) from the accepted SHA, reconcile output third-party imports to the approved
-source lock, and prove two offline frozen installs without unexpected registry
-resolution. This read-only harness makes unqualified candidates impossible to
-mistake for approved releases; it does not pretend to supply the missing
-candidate producer, source bundles or frozen output lock.
+### Source-built first-party archive producer (source-only, explicitly opt-in)
+
+The guarded artifact producer is `packages/deployer/factory-immutable-artifact-producer.mjs`.
+It performs a read-only preflight by default. `build` and `produce` require
+**separate** explicit environment opt-in. Use **two fresh, independent, clean**
+exact-HEAD source clones under private staging parents; the runtime candidate
+must be a sibling directory literally named `runtime` that does not exist.
+Do not point it at the live Factory host, the retained PR worktrees, or the
+updater's release paths.
+
+```sh
+node packages/deployer/factory-immutable-artifact-producer.mjs preflight ACCEPTED_40_CHAR_SHA ABS_SOURCE_CLONE
+
+MASTRA_FACTORY_IMMUTABLE_ARTIFACT_BUILD=1 node \
+  packages/deployer/factory-immutable-artifact-producer.mjs build ACCEPTED_40_CHAR_SHA ABS_SOURCE_CLONE
+
+# Only after a separately controlled, offline CLI build has generated
+# mastracode/web/.mastra/output with MASTRA_BUILD_SKIP_INSTALL=1:
+MASTRA_FACTORY_IMMUTABLE_ARTIFACT_PRODUCE=1 node \
+  packages/deployer/factory-immutable-artifact-producer.mjs produce ACCEPTED_40_CHAR_SHA ABS_SOURCE_CLONE ABS_SIBLING_RUNTIME
+```
+
+The build compiles source-tracked first-party modules in dependency order,
+through existing `build:lib`/`build` scripts, without invoking `deploy`,
+`prepack`, postinstall or network. The archive packer uses npm's local
+`--offline --ignore-scripts` pack list and an isolated copy, strips lifecycle
+scripts, replaces every source `workspace:` runtime edge with exact
+`file:` tar references and records per-archive SHA-256/SHA-512. It requires
+compiled `dist/` files, clean accepted source and at least 10GiB free at
+each stage. Archives are written to both runtime `artifacts/` and generated
+output `workspace-module/`; existing targets are never overwritten.
+
+**Important remaining release blocker:** this step emits
+`artifactOnly:true, candidateOnly:true`; it does **not** fabricate the
+generated-output `pnpm-lock.yaml`, choose new registry versions, install
+dependencies, declare a release reproducible or enable any Factory writes.
+After source-built packing, the complete generated lock must be reconciled
+against the accepted source's third-party package/snapshot closure, followed
+by TWO frozen offline installs, #51 independent-build verifier, accepted #227
+source/PG verifiers and fresh HP6 approval. A missing external artifact or
+source-locked version is a STOP condition, not permission to resolve online.
+
+Fake local packer regressions (safe; no monorepo globalSetup):
+
+```sh
+node --test packages/deployer/factory-immutable-artifact-producer.test.mjs
+```
+
+**Remaining prerequisite:** a separately accepted candidate **compositor**
+must reconcile generated-output third-party imports to the accepted source
+lock, construct root manifests and exact frozen lockfiles, then prove two
+offline frozen installs. The source-only artifact producer above solves the
+bounded first-party pack stage, not this external lock-closure problem. The
+read-only verifier continues to reject unqualified candidates; neither stage
+supplies the missing reviewed generated-output lock or production approval.
 
 ## Non-goals and safeguards
 

@@ -164,6 +164,11 @@ jobs:
           grep -Fxq '# tests 8' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
           grep -Fxq '# pass 8' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
           grep -Fxq '# fail 0' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
+          node --test packages/deployer/factory-immutable-artifact-producer.test.mjs \\
+            > "$RUNNER_TEMP/factory-immutable-artifact-producer.tap"
+          grep -Fxq '# tests 3' "$RUNNER_TEMP/factory-immutable-artifact-producer.tap"
+          grep -Fxq '# pass 3' "$RUNNER_TEMP/factory-immutable-artifact-producer.tap"
+          grep -Fxq '# fail 0' "$RUNNER_TEMP/factory-immutable-artifact-producer.tap"
           node -e '
             const fs = require("node:fs");
             for (const [file, expected, label] of [
