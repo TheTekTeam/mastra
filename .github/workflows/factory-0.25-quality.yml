@@ -15,6 +15,7 @@ on:
     paths:
       - 'mastracode/factory/**'
       - 'packages/core/src/llm/model/**'
+      - 'packages/core/src/agent/**'
       - 'packages/core/src/loop/shared/**'
       - 'packages/core/src/loop/workflows/agentic-execution/**'
       - 'packages/core/src/agent/durable/workflows/steps/**'
@@ -82,6 +83,25 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           printf 'Exact PR head: %s\n' "$EXPECTED_HEAD"
+
+      - name: Assert managed Core ingress sources can trigger exact-head CI
+        run: |
+          node - <<'NODE'
+            const { readFileSync } = require('node:fs');
+            const workflow = readFileSync('.github/workflows/factory-0.25-quality.yml', 'utf8');
+            for (const source of [
+              'packages/core/src/agent/**',
+              'packages/core/src/llm/model/**',
+              'packages/core/src/loop/shared/**',
+              'packages/core/src/loop/workflows/agentic-execution/**',
+              'packages/core/src/stream/aisdk/v5/**',
+            ]) {
+              if (!workflow.includes(`      - '${source}'`)) {
+                throw new Error(`Factory exact-head CI trigger missing managed Core source: ${source}`);
+              }
+            }
+            console.log('Factory managed Core PR-path trigger coverage verified');
+          NODE
 
       - name: Setup pinned Node and pnpm
         uses: ./.github/actions/setup-pnpm-node
