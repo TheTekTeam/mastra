@@ -13,6 +13,7 @@ import { constants } from 'node:fs';
 import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 import { parseDocument } from 'yaml';
 
 const EXPECTED_LOCAL = Object.freeze([
@@ -27,6 +28,52 @@ const reject = message => { throw new Error('IMMUTABLE_TWO_BUILD_BLOCKED: ' + me
 const ensure = (test, message) => { if (!test) reject(message); };
 const depMap = obj => ({ ...obj.dependencies, ...obj.devDependencies, ...obj.optionalDependencies });
 const safeName = name => /^[A-Za-z0-9._-]+\.tgz$/.test(name);
+
+function sourcePackageDeps(pkg) {
+  return { ...pkg.dependencies, ...pkg.optionalDependencies };
+}
+async function sourceLocalClosure(sourceRoot, webManifest) {
+  const files = execFileSync('git', ['-C', sourceRoot, 'ls-files', '-z', '--', '**/package.json'], {
+    encoding: 'buffer', maxBuffer: 16 * 1024 * 1024,
+  }).toString('utf8').split('\0').filter(Boolean);
+  const packages = new Map();
+  const filesByName = new Map();
+  for (const file of files) {
+    const manifest = JSON.parse((await readSafe(sourceRoot, file)).toString('utf8'));
+    if (!manifest.name) continue;
+    ensure(!packages.has(manifest.name), 'duplicate first-party package: ' + manifest.name);
+    packages.set(manifest.name, manifest);
+    filesByName.set(manifest.name, file);
+  }
+  const direct = sourceLinkNames(webManifest);
+  function walk(names, selected) {
+    for (const name of names) {
+      if (selected.has(name)) continue;
+      const pkg = packages.get(name);
+      ensure(pkg, 'unmapped first-party dependency: ' + name);
+      selected.add(name);
+      for (const [dep, version] of Object.entries(sourcePackageDeps(pkg))) {
+        if (typeof version === 'string' && version.startsWith('workspace:')) {
+          walk([dep], selected);
+        } else if (packages.has(dep)) {
+          reject('source first-party dependency is registry version: ' + name + ' -> ' + dep);
+        }
+      }
+    }
+  }
+  const runtime = new Set();
+  const output = new Set();
+  walk(direct, runtime);
+  walk(direct.filter(name => name !== 'mastra'), output);
+  for (const name of direct) {
+    const declared = depMap(webManifest)[name];
+    const file = path.relative(sourceRoot, path.resolve(sourceRoot, 'mastracode/web',
+      declared.slice('link:'.length), 'package.json')).split(path.sep).join('/');
+    ensure(filesByName.get(name) === file, 'linked web package source mismatch: ' + name);
+  }
+  ensure(runtime.size <= 200 && output.size <= runtime.size, 'invalid first-party closure');
+  return { packages, direct, runtime: [...runtime].sort(), output: [...output].sort() };
+}
 
 async function readSafe(root, relative) {
   ensure(relative && !path.isAbsolute(relative) && !relative.split('/').includes('..'), 'unsafe relative path');
@@ -50,6 +97,41 @@ async function parseLock(root, relative) {
     lock.importers?.['.'] && lock.packages && typeof lock.packages === 'object',
     'incomplete lock: ' + relative);
   return { bytes, lock };
+}
+
+/** Strict archive manifest reader: no extraction, links, duplicate or unsafe members. */
+function tarManifest(tgz) {
+  ensure(tgz.length > 0 && tgz.length < 128 * 1024 * 1024, 'invalid/oversized tgz');
+  const bytes = gunzipSync(tgz, { maxOutputLength: 128 * 1024 * 1024 });
+  const seen = new Set();
+  let manifest;
+  let offset = 0;
+  while (offset + 512 <= bytes.length) {
+    const header = bytes.subarray(offset, offset + 512);
+    if (header.every(byte => byte === 0)) break;
+    const field = (start, end) =>
+      header.subarray(start, end).toString('utf8').split('\0')[0];
+    const entry = (field(345, 500) ? field(345, 500) + '/' : '') + field(0, 100);
+    ensure(entry.startsWith('package/') && !entry.split('/').includes('..') &&
+      !path.isAbsolute(entry), 'unsafe tar entry: ' + entry);
+    ensure(!seen.has(entry), 'duplicate tar entry: ' + entry);
+    seen.add(entry);
+    const type = field(156, 157);
+    ensure(type === '' || type === '0' || type === '5',
+      'tar link/special entry: ' + entry);
+    const octal = field(124, 136).trim();
+    ensure(/^[0-7]+$/.test(octal), 'invalid tar size: ' + entry);
+    const size = parseInt(octal, 8);
+    const body = offset + 512;
+    ensure(body + size <= bytes.length, 'truncated tar entry: ' + entry);
+    if (entry === 'package/package.json') {
+      ensure(type !== '5', 'tar manifest directory');
+      manifest = JSON.parse(bytes.subarray(body, body + size).toString('utf8'));
+    }
+    offset = body + Math.ceil(size / 512) * 512;
+  }
+  ensure(manifest && typeof manifest === 'object', 'package tar manifest missing');
+  return manifest;
 }
 
 async function canonicalDir(directory) {
@@ -77,16 +159,26 @@ function assertLockIntegrity(sourceLock, candidateLock, localNames, rootKind, na
       /^sha512-[A-Za-z0-9+/]+=*$/.test(resolution.integrity),
       name + ' package resolution integrity missing: ' + key);
     // Local first-party file tar entries are checked separately below.
-    const locallyPinned = [...firstparty].some(n => key.startsWith(n + '@file:'));
-    if (locallyPinned) continue;
+    const sourceName = [...firstparty].find(n => key.startsWith(n + '@'));
+    if (sourceName) {
+      ensure(key.startsWith(sourceName + '@file:' +
+        (rootKind === 'runtime' ? 'artifacts' : 'workspace-module') + '/'),
+        name + ' first-party registry/foreign tar fallback: ' + key);
+      continue;
+    }
     ensure(Object.hasOwn(original, key), name + ' external package not in accepted source: ' + key);
     ensure(JSON.stringify(original[key]) === JSON.stringify(pkg),
       name + ' third-party source integrity/metadata drift: ' + key);
   }
   ensure(rootKind === 'runtime' || rootKind === 'output', 'bad root kind');
   for (const [key, snapshot] of Object.entries(candidateLock.snapshots ?? {})) {
-    const locallyPinned = [...firstparty].some(n => key.startsWith(n + '@file:'));
-    if (locallyPinned) continue;
+    const sourceName = [...firstparty].find(n => key.startsWith(n + '@'));
+    if (sourceName) {
+      ensure(key.startsWith(sourceName + '@file:' +
+        (rootKind === 'runtime' ? 'artifacts' : 'workspace-module') + '/'),
+        name + ' first-party registry/foreign tar fallback: ' + key);
+      continue;
+    }
     ensure(Object.hasOwn(sourceLock.snapshots ?? {}, key),
       name + ' external snapshot not in accepted source: ' + key);
     ensure(JSON.stringify(sourceLock.snapshots[key]) === JSON.stringify(snapshot),
@@ -148,7 +240,8 @@ export async function inspectCandidate({ sourceRoot, runtimeRoot, expectedHead, 
   ensure(!dirty, label + ' dirty accepted source');
   const sourceLock = await parseLock(sourceRoot, 'pnpm-lock.yaml');
   const sourceWebManifest = JSON.parse((await readSafe(sourceRoot, 'mastracode/web/package.json')).toString());
-  const localNames = sourceLinkNames(sourceWebManifest);
+  const closure = await sourceLocalClosure(sourceRoot, sourceWebManifest);
+  const localNames = closure.runtime;
   const rtManifestBytes = await readSafe(runtimeRoot, 'package.json');
   const outManifestBytes = await readSafe(outputRoot, 'package.json');
   const rtManifest = JSON.parse(rtManifestBytes.toString());
@@ -156,26 +249,49 @@ export async function inspectCandidate({ sourceRoot, runtimeRoot, expectedHead, 
   const rtLock = await parseLock(runtimeRoot, 'pnpm-lock.yaml');
   const outLock = await parseLock(outputRoot, 'pnpm-lock.yaml');
   const roots = [
-    { root: runtimeRoot, manifest: rtManifest, lock: rtLock.lock, section: 'artifacts', required: localNames, label: 'runtime' },
+    { root: runtimeRoot, manifest: rtManifest, lock: rtLock.lock, section: 'artifacts',
+      required: closure.runtime, direct: closure.direct, label: 'runtime' },
     { root: outputRoot, manifest: outManifest, lock: outLock.lock, section: 'workspace-module',
-      required: localNames.filter(n => n !== 'mastra'), label: 'output' },
+      required: closure.output, direct: closure.direct.filter(n => n !== 'mastra'), label: 'output' },
   ];
-  const tarPins = {};
+  const tarPins = { runtime: {}, output: {} };
   for (const item of roots) {
-    checkLocalImporter({ ...item, name: label + '/' + item.label });
+    checkLocalImporter({ ...item, required: item.direct, name: label + '/' + item.label });
     assertLockIntegrity(sourceLock.lock, item.lock, localNames, item.label, label + '/' + item.label);
     for (const dep of item.required) {
-      const spec = depMap(item.manifest)[dep];
-      const fileName = spec.slice(('file:./' + item.section + '/').length);
+      const keys = Object.keys(item.lock.packages).filter(key =>
+        key.startsWith(dep + '@file:' + item.section + '/'));
+      ensure(keys.length === 1, label + ' not exactly one pinned first-party tar: ' + dep);
+      const fileName = keys[0].slice((dep + '@file:' + item.section + '/').length);
       ensure(safeName(fileName), label + ' bad tar name: ' + dep);
       const bytes = await readSafe(item.root, item.section + '/' + fileName);
+      const archive = tarManifest(bytes);
+      const sourcePackage = closure.packages.get(dep);
+      ensure(archive.name === dep && archive.version === sourcePackage.version,
+        label + ' tar source identity mismatch: ' + dep);
+      const packedDeps = sourcePackageDeps(archive);
+      for (const [nested, originalSpec] of Object.entries(sourcePackageDeps(sourcePackage))) {
+        const packed = packedDeps[nested];
+        if (typeof originalSpec === 'string' && originalSpec.startsWith('workspace:')) {
+          ensure(typeof packed === 'string' && packed.startsWith('file:./' + item.section + '/'),
+            label + ' transitive first-party registry substitution: ' + dep + ' -> ' + nested);
+          const nestedFile = packed.slice(('file:./' + item.section + '/').length);
+          ensure(safeName(nestedFile) && Object.hasOwn(item.lock.packages,
+            nested + '@file:' + item.section + '/' + nestedFile),
+            label + ' missing transitive first-party pin: ' + dep + ' -> ' + nested);
+        } else ensure(packed === originalSpec,
+          label + ' third-party/source dep changed in tar: ' + dep + ' -> ' + nested);
+      }
+      for (const nested of Object.keys(packedDeps)) {
+        ensure(Object.hasOwn(sourcePackageDeps(sourcePackage), nested),
+          label + ' injected transitive dependency in tar: ' + dep + ' -> ' + nested);
+      }
       const sha = digest(bytes);
       const sha512 = digest(bytes, 'sha512');
       const key = dep + '@file:' + item.section + '/' + fileName;
       ensure(item.lock.packages[key]?.resolution?.integrity === 'sha512-' + sha512,
         label + ' tar lock integrity mismatch: ' + dep);
-      if (tarPins[dep]) ensure(tarPins[dep].sha256 === sha, label + ' dual-root tar mismatch: ' + dep);
-      else tarPins[dep] = { fileName, sha256: sha, sha512 };
+      tarPins[item.label][dep] = { fileName, sha256: sha, sha512 };
     }
   }
   return {

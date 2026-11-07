@@ -69,16 +69,27 @@ node packages/deployer/factory-immutable-two-builds.mjs verify-two \\
   ABS_SOURCE_A ABS_RUNTIME_A ABS_SOURCE_B ABS_RUNTIME_B
 ```
 
-A successful proof requires **all 13** linked first-party dependencies from
-`mastracode/web/package.json` to be pinned as local `file:` tarballs in each
-candidate runtime, and 12 (excluding the CLI) in each generated output.
-Each first-party lock importer must resolve the matching `file:` spec with
-correct SHA-512 integrity; neither runtime nor output may silently use registry
-versions, `link:` or `workspace:` instead. Every candidate external package and
+A successful proof verifies **all 13** direct `link:` dependencies in
+`mastracode/web/package.json` **plus their complete source-tracked recursive
+runtime dependency closure**, not merely the 13 imported names. At accepted
+e789 this is **30** runtime first-party tarballs and **27** output tarballs
+(the CLI, deployer and logger packages are absent from the generated output).
+The verifier derives this closure from the exact accepted source manifests;
+future legitimate changes must be explicitly reflected in source and reviewed.
+It reads every `.tgz` embedded package manifest without extracting any member,
+rejects unsafe tar paths/links, and checks that every source `workspace:` edge
+was replaced by a genuine locally pinned `file:` tar—not registry semver.
+Every required first-party archive must be present, individually SHA-512 locked,
+and source-name/version matched. Direct lock importers must also match their
+file pins; neither runtime nor output may silently use registry, `link:` or
+`workspace:` in place of a required first-party archive. Every candidate external package and
 snapshot record must match its accepted-source lock metadata, including exact
 third-party version and integrity. Both independently built candidate manifests,
-locks, tarball digests and generated asset trees must match. Source HEAD, lock
-and no-symlink, no-hardlink boundaries are also checked.
+locks, **root-specific** tarball digests and generated asset trees must match
+between the TWO independent candidate builds. Runtime `artifacts/` and output
+`workspace-module/` tars may differ in embedded relative `file:` dependency
+paths; each variant is independently pinned and compared across the two builds.
+Source HEAD, lock and no-symlink, no-hardlink boundaries are also checked.
 
 The proof emits only `candidateOnly:true`. **It cannot install an approval**;
 #47's independently controlled owner-private approval path and the accepted
@@ -96,8 +107,8 @@ node --test packages/deployer/factory-immutable-two-builds.test.mjs
 ```
 
 **Remaining prerequisite:** a separately accepted deterministic candidate
-_producer_ must construct the two roots, build/pack all 13 first-party modules
-from the accepted SHA, reconcile output third-party imports to the approved
+_producer_ must construct the two roots, build/pack the entire recursive
+first-party closure (currently runtime 30, output 27) from the accepted SHA, reconcile output third-party imports to the approved
 source lock, and prove two offline frozen installs without unexpected registry
 resolution. This read-only harness makes unqualified candidates impossible to
 mistake for approved releases; it does not pretend to supply the missing
