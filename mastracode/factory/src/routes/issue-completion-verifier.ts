@@ -52,25 +52,71 @@ function latestReviewNotBlocked(reviews: Array<{
   return [...latest.values()].every(review => review.state !== 'CHANGES_REQUESTED');
 }
 
-function latestCiChecksPassed(checks: Array<{
+interface NativeCheckRun {
   name: string;
   head_sha?: string;
   status?: string;
   conclusion?: string | null;
+  started_at?: string | null;
   completed_at?: string | null;
-}> , head: string): boolean {
-  const latest = new Map<string, (typeof checks)[number]>();
+  details_url?: string | null;
+}
+
+interface NativeCommitStatus {
+  id?: number;
+  context: string;
+  state: string;
+  created_at?: string | null;
+  target_url?: string | null;
+  creator?: { login?: string } | null;
+}
+
+/** GitHub Checks API and commit Statuses API are *different* evidence surfaces.
+ * ci/exact-head is a commit StatusContext, not a CheckRun. Bind the bot's
+ * published status to the same exact-head Actions run as Node 22 tests.
+ */
+function latestCiChecksPassed(
+  checks: NativeCheckRun[],
+  statuses: NativeCommitStatus[],
+  head: string,
+  repository: string,
+): boolean {
+  if (!checks.length || !statuses.length || checks.length >= 100 || statuses.length >= 100) return false;
+  const latestChecks = new Map<string, NativeCheckRun>();
   for (const check of checks) {
-    if (check.head_sha !== head) return false;
-    const key = check.name.trim().toLowerCase().replaceAll(' ', '');
-    const before = latest.get(key);
-    if (!before || (before.completed_at ?? '') <= (check.completed_at ?? '')) latest.set(key, check);
+    if (check.head_sha !== head || !check.name || !check.completed_at) return false;
+    const key = check.name.trim().toLowerCase();
+    const previous = latestChecks.get(key);
+    if (!previous || (previous.completed_at ?? '') <= check.completed_at) latestChecks.set(key, check);
   }
-  const required = ['node22', 'ci/exact-head'];
-  return required.every(key => {
-    const check = latest.get(key);
-    return check?.status === 'completed' && check.conclusion === 'success';
-  });
+  if ([...latestChecks.values()].some(check => check.status !== 'completed' ||
+      !['success', 'neutral', 'skipped'].includes(check.conclusion ?? ''))) return false;
+  const node = latestChecks.get('node 22 tests') ?? latestChecks.get('node 22');
+  if (!node || node.status !== 'completed' || node.conclusion !== 'success' ||
+      !node.started_at || !node.details_url) return false;
+  const nodeRun = /^https:\/\/github\.com\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)\/actions\/runs\/([1-9][0-9]*)\/job\/[1-9][0-9]*$/
+    .exec(node.details_url);
+  if (!nodeRun || nodeRun[1]?.toLowerCase() !== repository.toLowerCase()) return false;
+  const expectedRun = 'https://github.com/' + nodeRun[1] + '/actions/runs/' + nodeRun[2];
+  const publisher = latestChecks.get('publish exact-head result');
+  if (publisher && (publisher.conclusion !== 'success' ||
+      !publisher.details_url?.startsWith(expectedRun + '/job/'))) return false;
+
+  const latestStatuses = new Map<string, NativeCommitStatus>();
+  for (const status of statuses) {
+    if (!status.context || !status.created_at || !Number.isFinite(Date.parse(status.created_at))) return false;
+    const key = status.context.trim().toLowerCase();
+    const previous = latestStatuses.get(key);
+    if (!previous || (previous.created_at ?? '') < status.created_at ||
+        (previous.created_at === status.created_at &&
+         (previous.id ?? 0) < (status.id ?? 0))) latestStatuses.set(key, status);
+  }
+  if ([...latestStatuses.values()].some(status => status.state !== 'success')) return false;
+  const exact = latestStatuses.get('ci/exact-head');
+  return exact?.state === 'success' &&
+    exact.creator?.login === 'github-actions[bot]' &&
+    exact.target_url === expectedRun &&
+    Date.parse(exact.created_at ?? '') >= Date.parse(node.started_at);
 }
 
 /**
@@ -102,11 +148,12 @@ export function createIssueCompletionGithubVerifier(
       const [owner, repo] = receipt.sourceRepository.split('/');
       if (!owner || !repo) return false;
 
-      const [issueResult, prResult, reviewsResult, checksResult, graph] = await Promise.all([
+      const [issueResult, prResult, reviewsResult, checksResult, statusesResult, graph] = await Promise.all([
         octokit.issues.get({ owner, repo, issue_number: receipt.sourceIssueNumber }),
         octokit.pulls.get({ owner, repo, pull_number: receipt.pullRequestNumber }),
         octokit.pulls.listReviews({ owner, repo, pull_number: receipt.pullRequestNumber, per_page: 100 }),
         octokit.checks.listForRef({ owner, repo, ref: receipt.headSha, per_page: 100 }),
+        octokit.repos.listCommitStatusesForRef({ owner, repo, ref: receipt.headSha, per_page: 100 }),
         octokit.graphql<GraphEvidence>(`
           query NativeIssueCompletion($owner:String!,$repo:String!,$number:Int!) {
             repository(owner:$owner,name:$repo) {
@@ -138,7 +185,8 @@ export function createIssueCompletionGithubVerifier(
       if (reviews.length >= 100 || !latestReviewNotBlocked(reviews, receipt.headSha)) return false;
       const checks = checksResult.data;
       if (checks.total_count > checks.check_runs.length || checks.check_runs.length >= 100 ||
-          !latestCiChecksPassed(checks.check_runs, receipt.headSha)) return false;
+          !latestCiChecksPassed(checks.check_runs, statusesResult.data,
+            receipt.headSha, receipt.sourceRepository)) return false;
 
       const linkedIssue = graph.repository?.pullRequest?.closingIssuesReferences;
       const threads = graph.repository?.pullRequest?.reviewThreads;

@@ -28,9 +28,18 @@ function fixture() {
     reviews: [{ user: { login: 'modelspend-reviewer' }, state: 'APPROVED', commit_id: HEAD,
       submitted_at: '2026-11-06T10:10:00Z' }],
     checks: { total_count: 2, check_runs: [
-      { name: 'Node 22', head_sha: HEAD, status: 'completed', conclusion: 'success', completed_at: '2026-11-06T10:00:00Z' },
-      { name: 'ci/exact-head', head_sha: HEAD, status: 'completed', conclusion: 'success', completed_at: '2026-11-06T10:00:00Z' },
+      { name: 'Node 22 tests', head_sha: HEAD, status: 'completed', conclusion: 'success',
+        started_at: '2026-11-06T09:59:00Z', completed_at: '2026-11-06T10:00:00Z',
+        details_url: 'https://github.com/TheTekTeam/HTAI/actions/runs/12345/job/101' },
+      { name: 'Publish exact-head result', head_sha: HEAD, status: 'completed', conclusion: 'success',
+        started_at: '2026-11-06T09:59:30Z', completed_at: '2026-11-06T10:00:05Z',
+        details_url: 'https://github.com/TheTekTeam/HTAI/actions/runs/12345/job/102' },
     ] },
+    statuses: [
+      { id: 100, context: 'ci/exact-head', state: 'success',
+        created_at: '2026-11-06T10:00:02Z', creator: { login: 'github-actions[bot]' },
+        target_url: 'https://github.com/TheTekTeam/HTAI/actions/runs/12345' },
+    ],
     graph: { repository: { pullRequest: {
       closingIssuesReferences: { nodes: [{ number: 42 }], pageInfo: { hasNextPage: false } },
       reviewThreads: { nodes: [{ isResolved: true }], pageInfo: { hasNextPage: false } },
@@ -52,6 +61,7 @@ function fixture() {
           listReviews: async () => ({ data: state.reviews }),
         },
         checks: { listForRef: async () => ({ data: state.checks }) },
+        repos: { listCommitStatusesForRef: async () => ({ data: state.statuses }) },
         graphql: async () => state.graph,
       };
     },
@@ -64,6 +74,37 @@ describe('independent GitHub App-only final issue verifier', () => {
     const { state, verify } = fixture();
     expect(await verify(receipt, scope)).toBe(true);
     expect(state.calls).toEqual(['repo', 'links', 'install', 'app-installation-12345']);
+  });
+
+  it('accepts genuine detached publisher status without a separate Publish check-run', async () => {
+    const { state, verify } = fixture();
+    state.checks.check_runs.pop();
+    state.checks.total_count = 1;
+    expect(await verify(receipt, scope)).toBe(true);
+  });
+
+  it('rejects forged, pending, mismatched or ambiguously paginated exact-head statuses', async () => {
+    for (const mutate of [
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses[0]!.state = 'failure'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses[0]!.creator.login = 'attacker'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses[0]!.target_url = 'https://github.com/TheTekTeam/HTAI/actions/runs/99999'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses[0]!.created_at = 'invalid'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses[0]!.created_at = '2026-11-06T08:00:00Z'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.statuses.push(...Array.from({ length: 99 }, () => ({...s.statuses[0]!}))); },
+      (s: ReturnType<typeof fixture>['state']) => { s.checks.check_runs[0]!.details_url = 'https://github.com/other/repo/actions/runs/12345/job/101'; },
+      (s: ReturnType<typeof fixture>['state']) => { s.checks.check_runs[0]!.name = 'Node 22 impostor'; },
+    ]) {
+      const f = fixture();
+      mutate(f.state);
+      expect(await f.verify(receipt, scope)).toBe(false);
+    }
+    const newerFailure = fixture();
+    newerFailure.state.statuses.push({
+      id: 101, context: 'ci/exact-head', state: 'failure',
+      created_at: '2026-11-06T10:00:10Z', creator: { login: 'github-actions[bot]' },
+      target_url: 'https://github.com/TheTekTeam/HTAI/actions/runs/12345',
+    });
+    expect(await newerFailure.verify(receipt, scope)).toBe(false);
   });
 
   it('rejects unlinked/cross-org repository, invalid app installation and absent credential', async () => {
