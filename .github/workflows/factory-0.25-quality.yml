@@ -3,6 +3,13 @@ name: Factory 0.25 Exact-Head Quality
 # Dedicated fork-safe CI. Upstream Changed Test Gate intentionally skips
 # repositories other than mastra-ai/mastra; this check executes PR-head code.
 on:
+  # Branch-scoped fallback when this release workflow has not been registered on main.
+  push:
+    branches: [fix/factory-playground-dts-types-e789-20261107]
+    paths:
+      - '.github/workflows/factory-0.25-quality.yml'
+      - '.changeset/**'
+      - 'packages/playground-ui/**'
   pull_request:
     branches:
       - ci/factory-0.25-free-docs-runner-20261103
@@ -36,13 +43,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: factory-0.25-quality-pr-${{ github.event.pull_request.number }}
+  group: factory-0.25-quality-${{ github.event_name == 'push' && github.ref_name || github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   factory-exact-head:
     name: Factory 0.25 exact-head build, typecheck, lint and tests
-    if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == 'TheTekTeam/mastra' }}
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/fix/factory-playground-dts-types-e789-20261107') || (github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == 'TheTekTeam/mastra') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     env:
@@ -71,14 +78,14 @@ jobs:
         uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
         timeout-minutes: 15
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
           fetch-depth: 2
           filter: blob:none
           persist-credentials: false
 
       - name: Verify exact head identity
         env:
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
@@ -149,7 +156,7 @@ jobs:
       - name: Playground UI declarations and regression tests (exact PR head)
         timeout-minutes: 10
         env:
-          PLAYGROUND_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          PLAYGROUND_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$PLAYGROUND_EXPECTED_HEAD"
@@ -174,7 +181,7 @@ jobs:
       - name: Core A2 model tool and legacy effect checkpoints (exact head, no skips)
         timeout-minutes: 10
         env:
-          CORE_A2_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          CORE_A2_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$CORE_A2_EXPECTED_HEAD"
@@ -203,7 +210,7 @@ jobs:
       - name: Factory App issue evidence and project-binding grant revocation (no skips)
         timeout-minutes: 8
         env:
-          APP_EVIDENCE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          APP_EVIDENCE_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$APP_EVIDENCE_EXPECTED_HEAD"
@@ -225,7 +232,7 @@ jobs:
       - name: A0 PostgreSQL 18 guarded-thread integration (exact head, no skipped tests)
         timeout-minutes: 8
         env:
-          A0_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          A0_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
           A0_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
         run: |
           set -euo pipefail
@@ -238,7 +245,7 @@ jobs:
       - name: B1b and B2b real PG18 transactional security regressions (no skips)
         timeout-minutes: 8
         env:
-          B1B_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          B1B_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
           B1B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
           B2B_PG_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
         run: |
@@ -284,7 +291,7 @@ jobs:
       - name: Verify default-deny signup, existing login and native receipt with disposable PostgreSQL 18 HTTP
         timeout-minutes: 16
         env:
-          FACTORY_QA_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          FACTORY_QA_EXPECTED_HEAD: ${{ (github.event_name == 'push' && github.sha || github.event.pull_request.head.sha) }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$FACTORY_QA_EXPECTED_HEAD"
