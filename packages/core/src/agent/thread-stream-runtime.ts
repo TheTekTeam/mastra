@@ -5,7 +5,11 @@ import { isLeaseProvider, NoopLeaseProvider } from '../events/pubsub';
 import type { LeaseProvider, PubSub } from '../events/pubsub';
 import type { EventCallback } from '../events/types';
 import { AGENTIC_LOOP_WORKFLOW_ID } from '../loop/loop-builder';
-import { beforeCoreAgentPreparation, assertCoreSynchronousIngress } from '../loop/shared/core-effect-admission';
+import {
+  CORE_EFFECT_ADMISSION_CAPABILITY,
+  beforeCoreAgentPreparation,
+  assertCoreSynchronousIngress,
+} from '../loop/shared/core-effect-admission';
 import { parseMemoryRequestContext } from '../memory/types';
 import { MASTRA_RESOURCE_ID_KEY, MASTRA_THREAD_ID_KEY, RequestContext } from '../request-context';
 import type { MastraModelOutput } from '../stream/base/output';
@@ -4177,10 +4181,11 @@ export class AgentThreadStreamRuntime {
     pubsub?: PubSub,
     registrationOptions?: AgentThreadStrictRegistrationOptions | AgentThreadStreamRegistrationOptions,
   ): Promise<void | AgentThreadRunRegistration> | undefined {
-    // Deny non-strict registration before even assigning the prepared output
-    // or installing a threadless finalizer. Strict registration retains its
-    // separate epoch/lease claim and never enters this legacy fence.
-    if (!registrationOptions?.strict) {
+    // Only selected future managed mode may inspect strict this early. In
+    // default-disabled legacy mode the strict accessor must be read exactly
+    // where it was historically read, after thread/output preparation.
+    // Otherwise a side-effecting getter changes normal caller behaviour.
+    if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode !== 'disabled' && !registrationOptions?.strict) {
       assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
     }
     const { threadId, resourceId } = this.#getThreadTarget(streamOptions);

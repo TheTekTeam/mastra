@@ -12,6 +12,7 @@ import { InMemoryStore } from '../../storage';
 import { Agent } from '../agent';
 import { createDurableAgent } from '../durable/create-durable-agent';
 import { AgentThreadStreamRuntime } from '../thread-stream-runtime';
+import { getSingleDummyResponseModel } from './mock-model';
 
 const denied = vi.hoisted(() => ({
   sync: false,
@@ -27,6 +28,12 @@ vi.mock('../../loop/shared/core-effect-admission', async importOriginal => {
   const actual = await importOriginal<typeof import('../../loop/shared/core-effect-admission')>();
   return {
     ...actual,
+    CORE_EFFECT_ADMISSION_CAPABILITY: {
+      ...actual.CORE_EFFECT_ADMISSION_CAPABILITY,
+      get runtimeMode() {
+        return denied.sync ? 'enforce' : 'disabled';
+      },
+    },
     assertCoreSynchronousIngress: (boundary: Parameters<typeof actual.assertCoreSynchronousIngress>[0]) => {
       if (!denied.sync) return actual.assertCoreSynchronousIngress(boundary);
       denied.boundaries.push(boundary);
@@ -108,6 +115,126 @@ beforeEach(() => {
 });
 
 describe('A2 actual early Core ingress denial before local mutation', () => {
+  it('preserves a normal-function defaults receiver, synchronous return and real generate/stream calls', async () => {
+    let agent: Agent<any, any, any, any>;
+    const receivers: unknown[] = [];
+    agent = new Agent({
+      id: 'core-a2-defaults-receiver',
+      name: 'Core A2 Defaults Receiver',
+      instructions: 'Preserve legacy defaults semantics.',
+      model: getSingleDummyResponseModel('v2'),
+      defaultOptions: function (this: unknown) {
+        receivers.push(this);
+        return { maxSteps: 7 };
+      },
+    });
+    const direct = agent.getDefaultOptions();
+    expect(direct).not.toBeInstanceOf(Promise);
+    expect(direct).toMatchObject({ maxSteps: 7 });
+    const generation = await agent.generate('ordinary function defaults');
+    expect(generation.text).toContain('Dummy response');
+    const stream = await agent.stream('ordinary function defaults');
+    for await (const _part of stream.fullStream) {
+      /* drain */
+    }
+    expect(receivers).toEqual([agent, agent, agent]);
+  });
+
+  it('preserves async normal-function defaults receiver and direct/generate/stream resolution', async () => {
+    let agent: Agent<any, any, any, any>;
+    const receivers: unknown[] = [];
+    agent = new Agent({
+      id: 'core-a2-async-defaults-receiver',
+      name: 'Core A2 Async Defaults Receiver',
+      instructions: 'Preserve async defaults semantics.',
+      model: getSingleDummyResponseModel('v2'),
+      defaultOptions: async function (this: unknown) {
+        receivers.push(this);
+        return { maxSteps: 8 };
+      },
+    });
+    await expect(agent.getDefaultOptions()).resolves.toMatchObject({ maxSteps: 8 });
+    await agent.generate('async ordinary function defaults');
+    const stream = await agent.stream('async ordinary function defaults');
+    for await (const _part of stream.fullStream) {
+      /* drain */
+    }
+    expect(receivers).toEqual([agent, agent, agent]);
+  });
+
+  it('preserves synchronous exception timing from a normal-function defaults callback', () => {
+    const thrown = new Error('ordinary defaults failure');
+    let agent: Agent<any, any, any, any>;
+    agent = new Agent({
+      id: 'core-a2-throwing-defaults-receiver',
+      name: 'Core A2 Throwing Defaults Receiver',
+      instructions: 'Preserve thrown defaults errors.',
+      model: getSingleDummyResponseModel('v2'),
+      defaultOptions: function (this: unknown) {
+        expect(this).toBe(agent);
+        throw thrown;
+      },
+    });
+    expect(() => agent.getDefaultOptions()).toThrow(thrown);
+  });
+
+  it('preserves exactly one strict getter read for legacy threadless and threaded nonstrict registration', async () => {
+    for (const threaded of [false, true]) {
+      const runtime = new AgentThreadStreamRuntime();
+      const reads = vi.fn(() => false);
+      const registrationOptions = {
+        get strict() {
+          return reads();
+        },
+      };
+      const options = threaded ? { memory: { thread: 't', resource: 'r' } } : {};
+      const result = runtime.registerRun(
+        { id: `legacy-parity-${threaded}` } as any,
+        {
+          runId: `legacy-parity-run-${threaded}`,
+          status: 'running',
+          fullStream: new ReadableStream(),
+          _waitUntilFinished: async () => undefined,
+        } as any,
+        options as any,
+        undefined,
+        registrationOptions as any,
+      );
+      await result;
+      expect(reads).toHaveBeenCalledTimes(1);
+      runtime.resetForTests();
+    }
+  });
+
+  it('preserves legacy strict getter throw ordering after stream option inspection', () => {
+    for (const threaded of [false, true]) {
+      const runtime = new AgentThreadStreamRuntime();
+      const effects: string[] = [];
+      const options = Object.defineProperty(threaded ? { memory: { thread: 't', resource: 'r' } } : {}, 'abortSignal', {
+        get() {
+          effects.push('abortSignal');
+          return undefined;
+        },
+      });
+      const registrationOptions = {
+        get strict() {
+          effects.push('strict');
+          throw new Error('legacy strict getter thrown');
+        },
+      };
+      expect(() =>
+        runtime.registerRun(
+          { id: `legacy-throw-${threaded}` } as any,
+          { runId: `legacy-throw-run-${threaded}` } as any,
+          options as any,
+          undefined,
+          registrationOptions as any,
+        ),
+      ).toThrow('legacy strict getter thrown');
+      expect(effects).toEqual(['abortSignal', 'strict']);
+      runtime.resetForTests();
+    }
+  });
   it('blocks actual getModel, getLLM and getModelList resolution before dynamic model factories', async () => {
     const agent = newDynamicAgent();
     denied.model = true;

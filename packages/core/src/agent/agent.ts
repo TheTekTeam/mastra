@@ -3528,7 +3528,9 @@ export class Agent<
     // admission denial must occur before invoking their eager factory.
     // Disabled/unmanaged callers retain the preexisting synchronous result.
     const resolveDefaults = () => {
-      const result = configuredDefaults({
+      // Preserve the original receiver (`this.#defaultOptions(args)`).
+      // Ordinary function callbacks may legitimately inspect the Agent.
+      const result = configuredDefaults.call(this, {
         requestContext: requestContext as RequestContext<TRequestContext>,
         mastra: this.#mastra,
       });
