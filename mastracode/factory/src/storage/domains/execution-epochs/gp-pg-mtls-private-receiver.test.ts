@@ -306,6 +306,35 @@ describe('Factory default-off GP PG mutual TLS ingress',()=>{
       expect(after.body.status).toBe('denied');
     }finally{await f.dispose();}
   });
+  it.skipIf(!pgUrl)('requires exact PostgreSQL GP tombstone, not generic revoked lease state',async()=>{
+    const f=await fixture();
+    try{
+      const body={version:'factory_gp_pg_mtls_v1',kind:'issue',
+        requestId:f.s.bridgeChallengeId,projectId:f.s.projectId,
+        leaseIntentId:f.s.leaseIntentId,scopeTupleSha256:gpV9ScopeTupleDigest(f.s),
+        packet:f.packet};
+      const issued=await remoteWorker({...f.client,body});
+      expect(issued.http).toBe(200);
+      expect(issued.body.status).toBe('issued');
+      // Simulate a distinct managed lease-state transition that did NOT
+      // persist the authenticated GP revocation tombstone.
+      await f.storage.ops.updateMany('factory_core_manager_leases',{
+        org_id:f.s.factoryOrgId,factory_project_id:f.s.projectId
+      },{state:'revoked',updated_at:new Date()});
+      const withoutTombstone=await remoteWorker({...f.client,body,path:'receipt'});
+      expect(withoutTombstone.http).toBe(200);
+      expect(withoutTombstone.body.status).toBe('unknown');
+      // GP-authenticated revoke records the exact B1-keyed tombstone.
+      const revoke=await remoteWorker({...f.client,body:{
+        ...body,kind:'revoke',requestId:randomUUID()
+      }});
+      expect(revoke.http).toBe(200);
+      expect(revoke.body.status).toBe('revoked');
+      const withTombstone=await remoteWorker({...f.client,body,path:'receipt'});
+      expect(withTombstone.http).toBe(200);
+      expect(withTombstone.body.status).toBe('revoked');
+    }finally{await f.dispose();}
+  });
 });
 describe('Factory-native GP B1/B2/App scope attestor source',()=>{
   it('is unmounted and refuses missing private authority',()=>{

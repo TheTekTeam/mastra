@@ -453,7 +453,10 @@ export class FactoryGpPgLeaseIssuerStorage extends FactoryStorageDomain {
         const lease = await ops.findOne<LeaseRow>(LEASES, where);
         if (!lease || lease.lease_id !== scope.leaseIntentId ||
           lease.manager_writer_id !== scope.writerOwnerId) return null;
-        result = lease.state === 'revoked' ? 'revoked' : 'issued';
+        // Only an immutable GP revocation tombstone proves a safe handback.
+        // A generic lease state transition (expiry, external revoke or
+        // recovery) is not evidence of the GP-authenticated PG revocation.
+        result = lease.state === 'active' ? 'issued' : 'unknown';
         return null;
       });
       return result;
