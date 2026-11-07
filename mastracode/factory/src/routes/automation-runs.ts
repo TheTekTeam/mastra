@@ -26,6 +26,7 @@ import type { AuditEmitter, AuditRecorder } from '../storage/domains/audit/domai
 import { auditRequestContext } from '../storage/domains/audit/domain.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
+import type { IssueCompletionReceipt } from '../storage/domains/work-items/completion-evidence.js';
 import { FACTORY_ROUTE_CONTRACTS } from './contracts.js';
 import { Route } from './route.js';
 import type { RouteDependencies } from './route.js';
@@ -81,6 +82,16 @@ export interface AutomationRunRoutesDeps extends RouteDependencies {
   workItems: WorkItemsStorage;
   /** Config version stamped on the committed rule evaluation. */
   configVersion: string;
+  /**
+   * Optional, independently authorized GitHub App/HP6 exact-head verifier.
+   * No caller-provided 'verified' flag may ever satisfy this contract.
+   * Default missing = fail closed, even if Factory storage has a candidate.
+   * Must verify live issue/repo/PR/CI/review/merge/source snapshot, not stage.
+   */
+  verifyIssueCompletionEvidence?: (
+    receipt: IssueCompletionReceipt,
+    scope: { orgId: string; factoryProjectId: string; repositoryId: string },
+  ) => Promise<boolean>;
 }
 
 /** Resolved ingress scope for an automation-run request. */
@@ -183,6 +194,7 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
     const { workItems, configVersion } = this.deps;
     const contract = FACTORY_ROUTE_CONTRACTS.workItemAutomationRun;
     const receiptContract = FACTORY_ROUTE_CONTRACTS.automationRunReceipt;
+    const completionContract = FACTORY_ROUTE_CONTRACTS.issueCompletionEvidence;
 
     return [
       registerApiRoute(contract.path, {
@@ -298,6 +310,49 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
             { status: 'rejected', ...(code ? { code } : {}), requestId: request.requestId },
             code === 'stale' ? 409 : 422,
           );
+        },
+      }),
+      registerApiRoute(completionContract.path, {
+        method: completionContract.method,
+        handler: async c => {
+          // Final completion evidence is never public, even in deployments
+          // that deliberately allow local unauthenticated project GETs.
+          if (!this.deps.auth.enabled()) return c.json({ error: 'unauthorized' }, 401);
+          const context = loose(c);
+          const resolved = await this.#resolveProject(context, 'read');
+          if ('response' in resolved) return resolved.response;
+          const parsedPath = completionContract.pathSchema.safeParse({
+            id: c.req.param('id'),
+            workItemId: c.req.param('workItemId'),
+          });
+          if (!parsedPath.success) return c.json({ error: 'Issue completion evidence not found' }, 404);
+          const result = await workItems.getIssueCompletionEvidence(
+            resolved.orgId,
+            resolved.factoryProjectId,
+            parsedPath.data.workItemId,
+          );
+          if (result.kind === 'missing') return c.json({ error: 'Issue completion evidence not found' }, 404);
+          if (result.kind !== 'found') {
+            return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
+          }
+          // A receipt from the local DB is only a *candidate*. The independent
+          // authenticated GitHub/HP6 verifier is mandatory before HTTP 200.
+          const verify = this.deps.verifyIssueCompletionEvidence;
+          if (!verify) return c.json({ error: 'Issue completion evidence verifier unavailable' }, 409);
+          try {
+            if (!(await verify(result.receipt, {
+              orgId: resolved.orgId,
+              factoryProjectId: resolved.factoryProjectId,
+              repositoryId: result.repositoryId,
+            }))) {
+              return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
+            }
+          } catch {
+            return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
+          }
+          const validated = completionContract.responseSchema.safeParse(result.receipt);
+          if (!validated.success) return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
+          return c.json(validated.data, 200);
         },
       }),
       registerApiRoute(receiptContract.path, {
