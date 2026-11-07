@@ -2,18 +2,54 @@
 // READ ONLY. Print untrusted candidate evidence; never install, build, deploy or approve.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
 import path from 'node:path';
 const digest = (bytes, alg) => createHash(alg).update(bytes).digest(alg === 'sha512' ? 'base64' : 'hex');
 function assert(ok, reason) { if (!ok) throw new Error('IMMUTABLE_CANDIDATE_INVALID: ' + reason); }
+async function outputTreeDigest(root) {
+  assert(await realpath(root) === root && (await lstat(root)).isDirectory(), 'output root symlink');
+  const state = createHash('sha256');
+  let count = 0, total = 0;
+  async function walk(dir) {
+    const entries = await readdir(path.join(root, dir), { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const relative = dir ? dir + '/' + entry.name : entry.name;
+      if (relative === 'node_modules') continue;
+      if (entry.isDirectory()) {
+        await walk(relative);
+      } else if (entry.isFile()) {
+        const handle = await open(path.join(root, relative), constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          const info = await handle.stat();
+          assert(info.isFile() && info.nlink === 1, 'output hardlink/special file');
+          const bytes = await handle.readFile();
+          assert(++count <= 20000 && (total += bytes.length) <= 512 * 1024 * 1024, 'output too large');
+          state.update(JSON.stringify([relative, digest(bytes, 'sha256')]) + '\n');
+        } finally { await handle.close(); }
+      } else {
+        assert(false, 'output symlink/special file');
+      }
+    }
+  }
+  await walk('');
+  assert(count > 0, 'empty output');
+  return state.digest('hex');
+}
 async function main(releaseId, sourceRoot, projectRoot, runtimeRoot, outputRoot) {
   assert(/^[a-zA-Z0-9._-]{1,100}$/.test(releaseId), 'release ID');
   for (const p of [sourceRoot, projectRoot, runtimeRoot, outputRoot]) {
     assert(path.isAbsolute(p) && path.resolve(p) === p, 'non-canonical path');
   }
   assert(projectRoot.startsWith(sourceRoot + path.sep), 'project outside source');
+  for (const p of [sourceRoot, projectRoot, runtimeRoot, outputRoot]) {
+    assert(await realpath(p) === p && (await lstat(p)).isDirectory(), 'symlinked root');
+  }
+  const outputRelativeRoot = path.relative(sourceRoot, outputRoot);
+  assert(outputRelativeRoot && !outputRelativeRoot.startsWith('..'), 'output root outside source');
   const sourceHead = execFileSync('git', ['-C', sourceRoot, 'rev-parse', 'HEAD'], {encoding:'utf8'}).trim();
-  const dirty = execFileSync('git', ['-C', sourceRoot, 'status', '--porcelain', '--untracked-files=no'], {encoding:'utf8'}).trim();
+  const dirty = execFileSync('git', ['-C', sourceRoot, 'status', '--porcelain=v1', '--untracked-files=all', '--', '.', ':(exclude)' + outputRelativeRoot], {encoding:'utf8'}).trim();
   assert(/^[0-9a-f]{40}$/.test(sourceHead) && !dirty, 'uncommitted source');
   const runtime = JSON.parse(await readFile(path.join(runtimeRoot, 'package.json'), 'utf8'));
   const output = JSON.parse(await readFile(path.join(outputRoot, 'package.json'), 'utf8'));
@@ -45,6 +81,9 @@ async function main(releaseId, sourceRoot, projectRoot, runtimeRoot, outputRoot)
       sourceLockSha256:digest(sourceLock,'sha256'),
       runtimeLockSha256:digest(runtimeLock,'sha256'),
       outputLockSha256:digest(outputLock,'sha256'),
+      runtimeManifestSha256:digest(await readFile(path.join(runtimeRoot,'package.json')),'sha256'),
+      outputManifestSha256:digest(await readFile(path.join(outputRoot,'package.json')),'sha256'),
+      outputTreeSha256:await outputTreeDigest(outputRoot),
       pins,
     }},
   };

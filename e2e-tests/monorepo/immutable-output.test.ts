@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   getApprovedImmutableRelease,
+  hashImmutableOutputTree,
   verifyImmutableBuildInputs,
   type ApprovedImmutableRelease,
   type ImmutableTarPin,
@@ -108,10 +109,13 @@ async function fixture() {
     sourceLockSha256: sha256(sourceLock),
     runtimeLockSha256: sha256(await readFile(join(runtimeRoot, 'pnpm-lock.yaml'))),
     outputLockSha256: sha256(await readFile(join(outputRoot, 'pnpm-lock.yaml'))),
+    runtimeManifestSha256: sha256(await readFile(join(runtimeRoot, 'package.json'))),
+    outputManifestSha256: sha256(await readFile(join(outputRoot, 'package.json'))),
+    outputTreeSha256: await hashImmutableOutputTree(outputRoot),
     pins,
   };
   const verify = () => verifyImmutableBuildInputs({ approved, sourceRoot, runtimeRoot, outputRoot });
-  return { approved, verify, runtimeRoot, outputRoot };
+  return { approved, verify, sourceRoot, projectRoot, runtimeRoot, outputRoot };
 }
 
 describe('opt-in immutable Factory output provenance (no registry/network)', () => {
@@ -137,6 +141,8 @@ describe('opt-in immutable Factory output provenance (no registry/network)', () 
     const manifest = JSON.parse(await readFile(join(f.runtimeRoot, 'package.json'), 'utf8'));
     manifest.dependencies['@mastra/pg'] = '^1.33.0';
     await writeFile(join(f.runtimeRoot, 'package.json'), JSON.stringify(manifest));
+    // Even self-updating the claimed manifest digest cannot bypass the importer shape check.
+    f.approved.runtimeManifestSha256 = sha256(await readFile(join(f.runtimeRoot, 'package.json')));
     await expect(f.verify()).rejects.toThrow('IMMUTABLE_LOCK_IMPORTER_DRIFT');
   });
 
@@ -152,6 +158,55 @@ describe('opt-in immutable Factory output provenance (no registry/network)', () 
     expect(result.releases['review-me'].sourceHead).toBe(f.approved.sourceHead);
     expect(result.releases['review-me'].pins).toEqual(f.approved.pins);
     expect(result.releases['review-me'].outputLockSha256).toBe(f.approved.outputLockSha256);
+    expect(result.releases['review-me'].runtimeManifestSha256).toBe(f.approved.runtimeManifestSha256);
+    expect(result.releases['review-me'].outputManifestSha256).toBe(f.approved.outputManifestSha256);
+    expect(result.releases['review-me'].outputTreeSha256).toBe(f.approved.outputTreeSha256);
+  });
+
+  it('rejects untracked source injection even with an accepted Git HEAD', async () => {
+    const f = await fixture();
+    await mkdir(join(f.projectRoot, 'src', 'mastra'), { recursive: true });
+    await writeFile(join(f.projectRoot, 'src', 'mastra', 'untracked.ts'), 'export const injected = true;');
+    await expect(f.verify()).rejects.toThrow('IMMUTABLE_SOURCE_NOT_ACCEPTED');
+  });
+
+  it('rejects ignored executable source outside the attested output tree', async () => {
+    const f = await fixture();
+    await mkdir(join(f.projectRoot, 'src', 'mastra'), { recursive: true });
+    await writeFile(join(f.sourceRoot, '.gitignore'), 'mastracode/web/src/mastra/hidden.ts\n');
+    execFileSync('git', ['-C', f.sourceRoot, 'add', '.gitignore']);
+    execFileSync('git', ['-C', f.sourceRoot, '-c', 'user.name=Fixture',
+      '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'ignore fixture']);
+    f.approved.sourceHead = execFileSync('git', ['-C', f.sourceRoot, 'rev-parse', 'HEAD'],
+      { encoding: 'utf8' }).trim();
+    await writeFile(join(f.projectRoot, 'src', 'mastra', 'hidden.ts'), 'export const hidden = true;');
+    await expect(f.verify()).rejects.toThrow('IMMUTABLE_IGNORED_SOURCE_NOT_APPROVED');
+  });
+
+  it('rejects generated output symlinks even when the approved lock and tar digests match', async () => {
+    const f = await fixture();
+    await symlink(join(f.outputRoot, 'pnpm-lock.yaml'), join(f.outputRoot, 'injected.js'));
+    await expect(f.verify()).rejects.toThrow('IMMUTABLE_OUTPUT_SYMLINK_OR_SPECIAL');
+  });
+
+  it('rejects symlinked runtime roots despite lexically matching a caller-approved string', async () => {
+    const f = await fixture();
+    const alias = join(f.sourceRoot, 'runtime-alias');
+    await symlink(f.runtimeRoot, alias);
+    f.approved.runtimeRoot = alias;
+    await expect(verifyImmutableBuildInputs({
+      approved: f.approved, sourceRoot: f.sourceRoot,
+      runtimeRoot: alias, outputRoot: f.outputRoot,
+    })).rejects.toThrow('IMMUTABLE_ROOT_SYMLINK');
+  });
+
+  it('rejects a tampered runtime manifest even if its importer still looks plausible', async () => {
+    const f = await fixture();
+    const file = join(f.runtimeRoot, 'package.json');
+    const manifest = JSON.parse(await readFile(file, 'utf8'));
+    manifest.name = 'tampered';
+    await writeFile(file, JSON.stringify(manifest));
+    await expect(f.verify()).rejects.toThrow('IMMUTABLE_DIGEST_MISMATCH');
   });
 
   it('does not accept caller-supplied relative approval IDs, even without network', async () => {

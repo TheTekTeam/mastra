@@ -789,8 +789,10 @@ export class Deps extends MastraBase {
     if (immutable) {
       if (pm !== 'pnpm') throw new Error('IMMUTABLE_INSTALL_REQUIRES_PNPM');
       const approved = await getApprovedImmutableRelease(immutableReleaseId);
-      if (path.resolve(this.rootDir) !== approved.projectRoot ||
-          ![approved.runtimeRoot, approved.outputRoot].includes(path.resolve(dir))) {
+      if (
+        path.resolve(this.rootDir) !== approved.projectRoot ||
+        ![approved.runtimeRoot, approved.outputRoot].includes(path.resolve(dir))
+      ) {
         throw new Error('IMMUTABLE_INSTALL_ROOT_NOT_APPROVED');
       }
       // Must fail before source lock copy, importer overrides, workspace config or network.
@@ -835,7 +837,11 @@ export class Deps extends MastraBase {
 
     switch (pm) {
       case 'pnpm':
-        await this.writePnpmConfig(dir, { ...architecture, pnpmOverrides, pnpmNodeLinker, pnpmWorkspaceSettings });
+        // In immutable mode the approved output config is already hashed;
+        // generating a new workspace file would invalidate that evidence.
+        if (!immutable) {
+          await this.writePnpmConfig(dir, { ...architecture, pnpmOverrides, pnpmNodeLinker, pnpmWorkspaceSettings });
+        }
         break;
       case 'yarn':
         // similar to --ignore-workspace but for yarn

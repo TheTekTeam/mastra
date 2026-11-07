@@ -17,7 +17,11 @@ Each approved release pins:
 
 - Accepted clean source commit SHA and source `pnpm-lock.yaml` SHA-256.
 - Source root/project root and the exact candidate runtime and output roots.
-- **Both** candidate lockfile SHA-256 values and the output lock's source-relative path.
+- **Both** candidate lockfile and package.json SHA-256 values and the output lock's source-relative path.
+- A complete generated-output JS/assets/config tree SHA-256 (excluding only pnpm's
+  offline-reconstructed `node_modules` closure); symlinks and hardlinks fail closed.
+- No untracked source outside the attested output; ignored app source/config and
+  symlinked root paths fail closed.
 - Source-built `@mastra/factory`, `@mastra/pg` and `mastra` CLI tar names,
   SHA-256 hashes and SHA-512 integrity strings.
 - Exact `file:./artifacts/` runtime and `file:./workspace-module/` output
@@ -79,5 +83,8 @@ the original source worktree and all pending PR/Factory state.
 **Even the focused `immutable-output.test.ts` command triggers this directory's
 Vitest `globalSetup`** and therefore the same Git SAVEPOINT and cleanup. Run
 both focused and full monorepo tests only in a disposable copy/worktree.
-The test body's assertions are offline/read-only, but the suite harness is not.
-Do not treat either run as deployment approval.
+The test body's assertions are offline/read-only, but the default suite harness is not.
+For a narrow read-only check, explicitly select the standalone
+`e2e-tests/monorepo/vitest.immutable.config.ts` (which has no `globalSetup`),
+otherwise use a disposable copy/worktree. The exact-head CI uses this safe config.
+Do not treat either test run as deployment approval.
