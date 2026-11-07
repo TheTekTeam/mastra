@@ -161,8 +161,8 @@ jobs:
             --reporter=json --outputFile="$RUNNER_TEMP/factory-immutable-output.json" --maxWorkers=1
           node --test packages/deployer/factory-immutable-two-builds.test.mjs \\
             > "$RUNNER_TEMP/factory-immutable-two-builds.tap"
-          grep -Fxq '# tests 5' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
-          grep -Fxq '# pass 5' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
+          grep -Fxq '# tests 8' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
+          grep -Fxq '# pass 8' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
           grep -Fxq '# fail 0' "$RUNNER_TEMP/factory-immutable-two-builds.tap"
           node -e '
             const fs = require("node:fs");
