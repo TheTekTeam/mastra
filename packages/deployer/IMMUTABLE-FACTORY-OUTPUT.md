@@ -154,13 +154,54 @@ Fake local packer regressions (safe; no monorepo globalSetup):
 node --test packages/deployer/factory-immutable-artifact-producer.test.mjs
 ```
 
-**Remaining prerequisite:** a separately accepted candidate **compositor**
-must reconcile generated-output third-party imports to the accepted source
-lock, construct root manifests and exact frozen lockfiles, then prove two
-offline frozen installs. The source-only artifact producer above solves the
-bounded first-party pack stage, not this external lock-closure problem. The
-read-only verifier continues to reject unqualified candidates; neither stage
-supplies the missing reviewed generated-output lock or production approval.
+### Deterministic accepted-source candidate lock composer (default OFF)
+
+After the first-party archive stage, the source-only compositor
+`packages/deployer/factory-immutable-output-lock.mjs` creates candidate
+`pnpm-lock.yaml` files for **both** independently staged runtime and
+generated output roots. It only operates on a clean, exact source SHA and
+requires a separately pinned local pnpm **11.21.0** executable:
+
+```sh
+MASTRA_FACTORY_IMMUTABLE_LOCK_COMPOSE=1 node \
+  packages/deployer/factory-immutable-output-lock.mjs \
+  ACCEPTED_40_CHAR_SHA ABS_SOURCE_CLONE ABS_SIBLING_RUNTIME ABS_PNPM11_EXECUTABLE
+```
+
+The compositor uses the accepted source workspace's 224 dependency overrides
+and reviewed patch files. It adds exact `file:` references to all 30 runtime
+and 27 output first-party archives, invokes pnpm only with `--offline`,
+`--ignore-scripts` and `--lockfile-only` in an isolated temporary directory,
+then checks every third-party package and dependency snapshot against the
+accepted source lock. It **rejects** previously absent versions, changed
+integrity/metadata, first-party registry fallback, missing local tar files,
+SHA-512 mismatch, unsafe links, unsupported pnpm versions and any attempt to
+overwrite an existing candidate lock. It preserves the generated ESM server's
+`type:module`, `index.mjs` entry and safe `node ./index.mjs` start script;
+extra lifecycle or deployment scripts in generated output cause rejection.
+
+The resulting locks are **candidate-only**, not release authority. Only after
+TWO independently staged clones reproduce identical manifests, tar digests,
+generated output and locks may the accepted #51 verifier and #47 owner-private
+approval gate be considered. Never copy a live F2E lock into the candidate:
+that lock currently contains external versions not present in accepted e789.
+
+Safe, small offline and frozen-install fixture checks:
+
+```sh
+node --test packages/deployer/factory-immutable-output-lock.test.mjs
+```
+
+**Remaining acceptance:** the actual e789 third-party output closure has not
+been built or installed on either Dell or Z790. The real CLI-generated output
+may demand a dependency version absent from the accepted source lock, in
+which case the compositor deliberately fails. That requires a separate,
+independently reviewed exact source-lock change followed by two new offline
+builds—never an opportunistic online resolution. Only then can independent
+HP6 review, PostgreSQL 18 and rollback rehearsal qualify a release. Production
+and autonomous write permissions remain OFF.
+
+
 
 ## Non-goals and safeguards
 
