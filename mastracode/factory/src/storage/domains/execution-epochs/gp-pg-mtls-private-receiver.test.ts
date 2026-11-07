@@ -3,7 +3,7 @@ import { FactoryGpPgNativeScopeAttestorV1, FACTORY_GP_PG_NATIVE_SCOPE_ATTESTOR_C
 import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomInt, randomUUID, sign, X509Certificate } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,7 +15,7 @@ import { SourceControlStorage } from '../source-control/base.js';
 import { FactoryExecutionOriginStorage } from '../execution-origin/base.js';
 import { FactoryExecutionEpochStorage, FACTORY_EXECUTION_EPOCHS_SCHEMA } from './base.js';
 import { FactoryManagedCoreEffectStorage } from './managed-effect.js';
-import { FactoryGpPgLeaseIssuerStorage } from './gp-pg-lease-issuer.js';
+import { FactoryGpPgLeaseIssuerStorage, FACTORY_GP_PG_HANDOVER_CONSUMPTIONS_SCHEMA } from './gp-pg-lease-issuer.js';
 import { FactoryGpPgPrivateMtlsIngress, FACTORY_GP_PG_PRIVATE_MTLS_RECEIVER_CAPABILITY }
   from './gp-pg-mtls-private-receiver.js';
 import { gpV9ScopeTupleDigest } from './gp-pg-handover-crypto.js';
@@ -83,7 +83,7 @@ function remoteWorker(input:Record<string,unknown>):Promise<{http:number;body:Re
     });
   });
 }
-async function fixture(){
+async function fixture({withNative=false}={}){
   if(!pgUrl)throw new Error('isolated PG18 URL required');
   const dir=mkdtempSync(join(tmpdir(),'factory-gp-mtls-'));
   const factoryCert=certificate(dir,'factory.local');
@@ -110,7 +110,7 @@ async function fixture(){
   storage.registerDomain(new FactoryManagedCoreEffectStorage());
   const issuer=storage.registerDomain(new FactoryGpPgLeaseIssuerStorage({
     enabled:true,
-    trustedKey:{keyId:'gp-test-pinned-2026',publicKey},
+    trustedKey:{keyId:withNative?'pm-test-pin':'gp-test-pinned-2026',publicKey},
     resolvePrivateRequest:ingress.resolvePrivateIssue,
     resolvePrivateReceipt:ingress.resolvePrivateReceipt,
     resolvePrivateRevokeIdentity:ingress.resolvePrivateRevokeIdentity,
@@ -181,13 +181,48 @@ async function fixture(){
   });
   expect(await epochs.tryQuiesce({orgId:s.factoryOrgId,projectId:s.projectId,
     expectedRevision:0,ownerEpoch:s.ownerEpoch})).toBe('quiescing');
-  const {port}=await ingress.listen(issuer);
+  const nativeKeys=withNative?generateKeyPairSync('ed25519'):null;
+  const nativeAttestor=nativeKeys?new FactoryGpPgNativeScopeAttestorV1({
+    enabled:true,storage,privateKey:nativeKeys.privateKey,
+    keyId:'factory-test-pin',
+    resolvePrivateScope:ingress.resolvePrivateNativeScope,
+    readAuthenticatedPmV8:async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
+      const t=(await ops.databaseNow!()).getTime();
+      return {source:'authenticated_current_pm_gp_v8_preconsent_v1' as const,
+        actor:'gp' as const,sessionVerified:true as const,
+        csrfVerified:true as const,consentUnrevoked:true as const,
+        projectSelected:true as const,writerPaused:true as const,
+        dispatchPending:0 as const,factoryOrgId:s.factoryOrgId,
+        projectId:s.projectId,consentRequestId:s.consentRequestId,
+        manifestId:s.manifestId,nonceSha256:s.nonceSha256,
+        writerOwnerId:s.writerOwnerId,writerEpoch:s.writerEpoch,
+        ownerEpoch:s.ownerEpoch,authorityRevision:s.authorityRevision,
+        policyDigest:s.policyDigest,verifiedAtMs:t,
+        writerLeaseExpiresAtMs:t+30000};
+    },
+    readNativeDrain:async(_ops,s)=>({
+      source:'factory_pg_same_transaction_drain_v1' as const,
+      projectId:s.projectId,factoryOrgId:s.factoryOrgId,
+      coverageArmed:true as const,mappingDigest:s.mappingDigest,
+      coverageVersion:1,runningCount:0 as const,parkedCount:0 as const,
+      pendingCount:0 as const,unknownCount:0 as const,
+      unsettledEffectCount:0 as const,remoteExecutionSupported:false as const
+    }),
+    readLiveAppGrant:async(ops,s,binding)=>({
+      source:'authenticated_github_app_grant_v1' as const,
+      grantActive:true as const,factoryOrgId:s.factoryOrgId,projectId:s.projectId,
+      repositoryId:s.repositoryId,repositoryOwnerId:s.repositoryOwnerId,
+      appInstallationId:s.appInstallationId!,...binding,
+      verifiedAtMs:(await ops.databaseNow!()).getTime()
+    })
+  }):undefined;
+  const {port}=await ingress.listen(issuer,nativeAttestor);
   const client={
     port,ca:factoryCert.cert.toString(),cert:pmCert.cert.toString(),
     key:pmCert.key.toString(),
     serverPin:new X509Certificate(factoryCert.cert).fingerprint256.replaceAll(':','').toLowerCase()
   };
-  return {s,client,packet:signed(s,privateKey),storage,issuer,ingress,dir,
+  return {s,client,packet:signed(s,privateKey),storage,issuer,ingress,dir,privateKey,nativeKeys,
     dispose:async()=>{await ingress.close();await storage.close();
       rmSync(dir,{recursive:true,force:true});}};
 }
@@ -323,6 +358,50 @@ describe('Factory-native GP B1/B2/App scope attestor source',()=>{
           appInstallationId:f.s.appInstallationId!+1})
       });
       expect(await mismatched.attest(trusted)).toBeNull();
+    }finally{await f.dispose();}
+  });
+});
+
+const pmCrossRoot=process.env.GP_PG_PM_TEST_WORKTREE;
+describe('cross-repository GP HTTPS to real Factory PG18 handover',()=>{
+  it.skipIf(!pgUrl||!pmCrossRoot)('uses actual PM v9 and Factory locked PG18 lease through pinned mTLS',async()=>{
+    const f=await fixture({withNative:true});
+    try{
+      expect(f.nativeKeys).not.toBeNull();
+      const pmSigningKeyPath=join(f.dir,'pm-test-signing.key');
+      const factorySignerPublicKeyPath=join(f.dir,'factory-test-signing.pub');
+      writeFileSync(pmSigningKeyPath,
+        f.privateKey.export({format:'pem',type:'pkcs8'}),{mode:0o600});
+      writeFileSync(factorySignerPublicKeyPath,
+        f.nativeKeys!.publicKey.export({format:'pem',type:'spki'}),{mode:0o600});
+      const config={
+        projectId:f.s.projectId,factoryOrgId:f.s.factoryOrgId,
+        repositoryId:f.s.repositoryId,repositoryOwnerId:f.s.repositoryOwnerId,
+        appInstallationId:f.s.appInstallationId,
+        ownerEpoch:f.s.ownerEpoch,mappingDigest:f.s.mappingDigest,
+        port:f.client.port,pmSigningKeyPath,factorySignerPublicKeyPath,
+        factoryCertPath:join(f.dir,'factory.local.pem'),
+        pmCertPath:join(f.dir,'pm.local.pem'),
+        pmTlsKeyPath:join(f.dir,'pm.local.key')
+      };
+      const pmTest=join(pmCrossRoot!,'test/goal-pg-native-mtls-scope-reader.test.mjs');
+      const child=spawn(process.execPath,['--test',
+        '--test-name-pattern=CROSS-REPO actual Factory PG18',pmTest],{
+        env:{...process.env,GP_PG_FACTORY_NATIVE_WIRE_TEST_CONFIG:JSON.stringify(config)},
+        stdio:['ignore','pipe','pipe']
+      });
+      const result=await new Promise<{code:number|null;output:string}>((yes,no)=>{
+        let output='';
+        child.stdout.on('data',x=>output+=String(x).slice(0,8000));
+        child.stderr.on('data',x=>output+=String(x).slice(0,8000));
+        child.once('error',no);
+        child.once('close',code=>yes({code,output:output.slice(-7000)}));
+      });
+      expect(result.code,result.output).toBe(0);
+      const rows=await f.storage.ops.findMany<{id:string}&Record<string,unknown>>(
+        FACTORY_GP_PG_HANDOVER_CONSUMPTIONS_SCHEMA.name,
+        {org_id:f.s.factoryOrgId,factory_project_id:f.s.projectId});
+      expect(rows.length).toBe(1);
     }finally{await f.dispose();}
   });
 });
