@@ -32,13 +32,24 @@ const safeName = name => /^[A-Za-z0-9._-]+\.tgz$/.test(name);
 function sourcePackageDeps(pkg) {
   return { ...pkg.dependencies, ...pkg.optionalDependencies };
 }
-async function sourceLocalClosure(sourceRoot, webManifest) {
+export async function sourceLocalClosure(sourceRoot, webManifest) {
   const files = execFileSync('git', ['-C', sourceRoot, 'ls-files', '-z', '--', '**/package.json'], {
     encoding: 'buffer', maxBuffer: 16 * 1024 * 1024,
   }).toString('utf8').split('\0').filter(Boolean);
+  const workspace = parseDocument((await readSafe(sourceRoot, 'pnpm-workspace.yaml')).toString('utf8'),
+    { uniqueKeys: true }).toJS({ maxAliasCount: 0 });
+  ensure(Array.isArray(workspace?.packages), 'missing authoritative pnpm workspace list');
+  const matchers = workspace.packages.map(pattern => {
+    ensure(typeof pattern === 'string' && /^[A-Za-z0-9@._/*-]+$/.test(pattern),
+      'unsupported authoritative workspace pattern');
+    return new RegExp('^' + pattern.split('/').map(part =>
+      part === '*' ? '[^/]+' : part.replace(/\./g, '\\.')).join('/') + '$');
+  });
   const packages = new Map();
   const filesByName = new Map();
   for (const file of files) {
+    const dir = path.posix.dirname(file);
+    if (!matchers.some(regexp => regexp.test(dir))) continue;
     const manifest = JSON.parse((await readSafe(sourceRoot, file)).toString('utf8'));
     if (!manifest.name) continue;
     ensure(!packages.has(manifest.name), 'duplicate first-party package: ' + manifest.name);
@@ -72,7 +83,7 @@ async function sourceLocalClosure(sourceRoot, webManifest) {
     ensure(filesByName.get(name) === file, 'linked web package source mismatch: ' + name);
   }
   ensure(runtime.size <= 200 && output.size <= runtime.size, 'invalid first-party closure');
-  return { packages, direct, runtime: [...runtime].sort(), output: [...output].sort() };
+  return { packages, filesByName, direct, runtime: [...runtime].sort(), output: [...output].sort() };
 }
 
 async function readSafe(root, relative) {

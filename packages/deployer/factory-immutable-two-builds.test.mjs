@@ -74,6 +74,8 @@ async function source() {
       name, version: '1.0.0', dependencies: sourceDeps(name),
     }));
   }
+  await writeFile(path.join(sourceRoot, 'pnpm-workspace.yaml'),
+    'packages:\n  - fake/@mastra/*\n  - fake/mastra\n');
   await writeFile(path.join(sourceRoot, '.gitignore'), 'mastracode/web/.mastra/\n');
   execFileSync('git', ['init', '-q', sourceRoot]);
   execFileSync('git', ['-C', sourceRoot, 'add', '.']);
