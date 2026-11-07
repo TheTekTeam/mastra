@@ -4,7 +4,7 @@ import { Field, FieldDescription, FieldError, FieldLabel, Fieldset, FieldsetLege
 
 const GROUP_TYPES = ['object', 'array'];
 
-function GroupFooter({ description, error }: { description?: React.ReactNode; error?: string }) {
+function GroupFooter({ description, error }: { description?: React.ReactNode; error?: React.ReactNode }) {
   if (!description && !error) return null;
   return (
     <Field invalid={Boolean(error)}>

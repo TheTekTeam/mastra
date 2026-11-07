@@ -3,7 +3,6 @@ import { chartYTickCount, niceYTicks, pickTimeTicks } from './chart-axes';
 import type { ChartSize, ChartXLabels } from './chart-axes';
 import { CHART_AXIS_FONT_SIZE, X_AXIS_HEIGHT } from './chart-layout';
 import { ChartTimeTick } from './chart-time-tick';
-import type { ChartTimeTickProps } from './chart-time-tick';
 import { CHART_LABEL_COLOR } from '@/ds/tokens';
 
 /** A chart's height: pixels, or `fill` to grow with its parent (a flex column, e.g. a card). */
@@ -37,8 +36,15 @@ export function timeXAxis({
     <XAxis
       dataKey={xKey}
       height={X_AXIS_HEIGHT}
-      tick={(props: Omit<ChartTimeTickProps, 'picked' | 'count' | 'plotWidth'>) => (
-        <ChartTimeTick {...props} picked={picked} count={data.length} plotWidth={plotWidth} />
+      tick={props => (
+        <ChartTimeTick
+          x={Number(props.x)}
+          y={Number(props.y)}
+          payload={props.payload}
+          picked={picked}
+          count={data.length}
+          plotWidth={plotWidth}
+        />
       )}
       tickLine={false}
       axisLine={false}
