@@ -1,3 +1,5 @@
+import { createFactoryGpPgInstalledAppGrantReader, FACTORY_GP_PG_APP_GRANT_PROVIDER }
+  from './gp-pg-server-app-grant.js';
 import { FactoryGpPgNativeScopeAttestorV1, FACTORY_GP_PG_NATIVE_SCOPE_ATTESTOR_CAPABILITY }
   from './gp-pg-native-scope-attestor.js';
 import { spawn } from 'node:child_process';
@@ -358,6 +360,72 @@ describe('Factory-native GP B1/B2/App scope attestor source',()=>{
           appInstallationId:f.s.appInstallationId!+1})
       });
       expect(await mismatched.attest(trusted)).toBeNull();
+    }finally{await f.dispose();}
+  });
+});
+
+describe('Factory native PG App authority through installed GithubIntegration',()=>{
+  it.skipIf(!pgUrl)('reads actual PG link while holding B1 lock; proves live installation grant twice with server-held client',async()=>{
+    const f=await fixture();
+    try{
+      const connection=await f.storage.ops.findOne<{id:string}&Record<string,unknown>>(
+        'factory_project_source_control_connections',{factory_project_id:f.s.projectId});
+      expect(connection?.id).toBeTruthy();
+      const link=await f.storage.ops.findOne<{id:string;repository_id:string}&Record<string,unknown>>(
+        'factory_project_repositories',{connection_id:connection!.id});
+      const repo=await f.storage.ops.findOne<{id:string;installation_id:string}&Record<string,unknown>>(
+        'source_control_repositories',{id:link!.repository_id});
+      const ids={projectRepositoryLinkId:link!.id,connectionId:connection!.id,
+        repositoryRecordId:repo!.id,installationRecordId:repo!.installation_id};
+      let membershipReads=0;
+      const installed={
+        getAppOctokit:()=>({apps:{getAuthenticated:async()=>({data:{slug:'tek-test'}})}}),
+        getInstallationOctokit:(installationId:number)=>{
+          expect(installationId).toBe(f.s.appInstallationId);
+          return {
+            apps:{listReposAccessibleToInstallation:async()=>{
+              membershipReads++;
+              return {data:{total_count:1,repositories:[{
+                id:f.s.repositoryId,full_name:'TheTekTeam/HTAI'
+              }]}};
+            }},
+            repos:{get:async()=>({data:{
+              id:f.s.repositoryId,full_name:'TheTekTeam/HTAI',
+              owner:{id:f.s.repositoryOwnerId}
+            }})}
+          };
+        }
+      };
+      const provider=createFactoryGpPgInstalledAppGrantReader({enabled:true,github:installed});
+      let result:Awaited<ReturnType<typeof provider>>=null;
+      await f.storage.withTransaction(async ops=>{
+        await ops.updateAtomic(FACTORY_EXECUTION_EPOCHS_SCHEMA.name,{
+          org_id:f.s.factoryOrgId,factory_project_id:f.s.projectId
+        },async row=>{
+          expect(row.state).toBe('quiescing');
+          result=await provider(ops,f.s,ids);
+          return null;
+        });
+      });
+      expect(result?.grantActive).toBe(true);
+      expect(membershipReads).toBe(1);
+      expect(FACTORY_GP_PG_APP_GRANT_PROVIDER).toMatchObject({
+        installed:false,enabledByDefault:false,productionReady:false
+      });
+      const unavailable=createFactoryGpPgInstalledAppGrantReader();
+      expect(await unavailable(f.storage.ops,f.s,ids)).toBeNull();
+      const revoked=createFactoryGpPgInstalledAppGrantReader({enabled:true,
+        github:{...installed,getInstallationOctokit:()=>({
+          apps:{listReposAccessibleToInstallation:async()=>({
+            data:{total_count:0,repositories:[]}
+          })},
+          repos:{get:async()=>({data:{
+            id:f.s.repositoryId,full_name:'TheTekTeam/HTAI',
+            owner:{id:f.s.repositoryOwnerId}
+          }})}
+        })}
+      });
+      expect(await revoked(f.storage.ops,f.s,ids)).toBeNull();
     }finally{await f.dispose();}
   });
 });
