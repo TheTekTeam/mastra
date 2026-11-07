@@ -50,6 +50,13 @@ import type {
 import { RegisteredLogger } from '../logger';
 import { AGENTIC_EXECUTION_WORKFLOW_ID, AGENTIC_LOOP_WORKFLOW_ID } from '../loop/loop-builder';
 import { networkLoop } from '../loop/network';
+import {
+  beforeCoreAgentPreparation,
+  beforeCoreDynamicDefaultOptionsResolution,
+  beforeCoreDynamicModelResolution,
+  beforeCoreDynamicToolResolution,
+  assertCoreSynchronousIngress,
+} from '../loop/shared/core-effect-admission';
 import { getRunStreamSlot, getScopeStreamSlot } from '../loop/shared/stream-until-idle-helpers';
 import type { AgentLoopResumeClaim } from '../loop/types';
 // `Mastra` is imported type-only here: a runtime import would create an ESM
@@ -3512,32 +3519,41 @@ export class Agent<
   public getDefaultOptions({ requestContext = new RequestContext() }: { requestContext?: RequestContext } = {}):
     | AgentExecutionOptions<TOutput>
     | Promise<AgentExecutionOptions<TOutput>> {
-    if (typeof this.#defaultOptions !== 'function') {
-      return this.#defaultOptions;
+    const configuredDefaults = this.#defaultOptions;
+    if (typeof configuredDefaults !== 'function') {
+      return configuredDefaults;
     }
 
-    const result = this.#defaultOptions({
-      requestContext: requestContext as RequestContext<TRequestContext>,
-      mastra: this.#mastra,
-    });
+    // Dynamic defaults are arbitrary user-supplied code. A future managed
+    // admission denial must occur before invoking their eager factory.
+    // Disabled/unmanaged callers retain the preexisting synchronous result.
+    const resolveDefaults = () => {
+      // Preserve the original receiver (`this.#defaultOptions(args)`).
+      // Ordinary function callbacks may legitimately inspect the Agent.
+      const result = configuredDefaults.call(this, {
+        requestContext: requestContext as RequestContext<TRequestContext>,
+        mastra: this.#mastra,
+      });
+      return resolveMaybePromise(result, options => {
+        if (!options) {
+          const mastraError = new MastraError({
+            id: 'AGENT_GET_DEFAULT_OPTIONS_FUNCTION_EMPTY_RETURN',
+            domain: ErrorDomain.AGENT,
+            category: ErrorCategory.USER,
+            details: {
+              agentName: this.name,
+            },
+            text: `[Agent:${this.name}] - Function-based default options returned empty value`,
+          });
+          this.logger.trackException(mastraError);
+          throw mastraError;
+        }
 
-    return resolveMaybePromise(result, options => {
-      if (!options) {
-        const mastraError = new MastraError({
-          id: 'AGENT_GET_DEFAULT_OPTIONS_FUNCTION_EMPTY_RETURN',
-          domain: ErrorDomain.AGENT,
-          category: ErrorCategory.USER,
-          details: {
-            agentName: this.name,
-          },
-          text: `[Agent:${this.name}] - Function-based default options returned empty value`,
-        });
-        this.logger.trackException(mastraError);
-        throw mastraError;
-      }
-
-      return options;
-    });
+        return options;
+      });
+    };
+    const admission = beforeCoreDynamicDefaultOptionsResolution();
+    return admission ? admission.then(resolveDefaults) : resolveDefaults();
   }
 
   /**
@@ -3633,6 +3649,10 @@ export class Agent<
       return resolveToolList(this.#tools as ToolsInput | undefined);
     }
 
+    // listTools() can be called directly, bypassing getToolsForExecution().
+    // Fence the factory itself, not only its higher-level callers.
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const result = this.#tools({
       requestContext: requestContext as RequestContext<TRequestContext>,
       mastra: this.#mastra,
@@ -3734,6 +3754,8 @@ export class Agent<
     modelConfig: DynamicArgument<MastraModelConfig>,
     requestContext: RequestContext,
   ): Promise<MastraLanguageModel | MastraLegacyLanguageModel> {
+    const admission = beforeCoreDynamicModelResolution();
+    if (admission) await admission;
     try {
       return await resolveModelConfig(modelConfig, requestContext, this.#mastra);
     } catch (error) {
@@ -3838,6 +3860,8 @@ export class Agent<
     modelConfig: DynamicArgument<MastraModelConfig | ModelWithRetries[], TRequestContext> | ModelFallbacks,
     requestContext: RequestContext,
   ): Promise<ResolvedModelSelection> {
+    const admission = beforeCoreDynamicModelResolution();
+    if (admission) await admission;
     // If it's a dynamic function, resolve it
     if (typeof modelConfig === 'function') {
       const resolved = await modelConfig({
@@ -4259,6 +4283,7 @@ export class Agent<
    * @internal
    */
   __fork(): Agent<TAgentId, TTools, TOutput, TRequestContext> {
+    assertCoreSynchronousIngress('synchronous-clone-construction');
     const fork = new Agent<TAgentId, TTools, TOutput, TRequestContext>({
       ...this.#config,
       rawConfig: this.toRawConfig(),
@@ -7157,6 +7182,8 @@ export class Agent<
     /** @internal In-flight run messages, so recovery can restore processor-loaded tools. */
     runMessages?: MastraDBMessage[];
   }): Promise<Record<string, CoreTool>> {
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const requestContext = options.requestContext ?? new RequestContext();
     const defaultOptions = await this.getDefaultOptions({ requestContext });
     const mergedOptions = deepMerge(
@@ -7244,6 +7271,8 @@ export class Agent<
     model?: MastraLanguageModel | MastraLegacyLanguageModel;
     runMessages?: MastraDBMessage[];
   } & Partial<ObservabilityContext>): Promise<Record<string, CoreTool>> {
+    const admission = beforeCoreDynamicToolResolution();
+    if (admission) await admission;
     const observabilityContext = resolveObservabilityContext(rest);
     let mastraProxy = undefined;
     const logger = this.logger;
@@ -9419,6 +9448,8 @@ export class Agent<
     options?: MultiPrimitiveExecutionOptions<OUTPUT>,
   ): Promise<MastraAgentNetworkStream<OUTPUT>>;
   async network<OUTPUT = undefined>(messages: MessageListInput, options?: MultiPrimitiveExecutionOptions<OUTPUT>) {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     const callerRequestContext = options?.requestContext || new RequestContext();
 
     // Merge default network options with call-specific options
@@ -9639,6 +9670,8 @@ export class Agent<
       structuredOutput?: PublicStructuredOutputOptions<any>;
     } & { model?: DynamicArgument<MastraModelConfig> },
   ): Promise<FullOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     // Route standalone `new Agent({ durable: true })` calls through the
     // durable execution path so callers using the agent outside of a
     // `Mastra` instance still get durable execution. When attached to
@@ -10453,6 +10486,8 @@ export class Agent<
       structuredOutput?: PublicStructuredOutputOptions<any>;
     } & { model?: DynamicArgument<MastraModelConfig> },
   ): Promise<MastraModelOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     // Route standalone `new Agent({ durable: true })` calls through the
     // durable execution path so callers using the agent outside of a
     // `Mastra` instance still get durable streams. When attached to Mastra,
@@ -11697,6 +11732,8 @@ export class Agent<
       model?: DynamicArgument<MastraModelConfig>;
     } = {},
   ): Promise<OUTPUT extends undefined ? GenerateTextResult<any, EXPERIMENTAL_OUTPUT> : GenerateObjectResult<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     return this.getLegacyHandler().generateLegacy(messages, generateOptions);
   }
 
@@ -11761,6 +11798,8 @@ export class Agent<
     | StreamTextResult<any, OUTPUT>
     | (StreamObjectResult<OUTPUT extends ZodSchema | JSONSchema7 ? OUTPUT : never> & TracingProperties)
   > {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     return this.getLegacyHandler().streamLegacy(messages, streamOptions) as Promise<
       | StreamTextResult<any, OUTPUT>
       | (StreamObjectResult<OUTPUT extends ZodSchema | JSONSchema7 ? OUTPUT : never> & TracingProperties)
