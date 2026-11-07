@@ -409,6 +409,9 @@ export abstract class Bundler extends MastraBundler {
       pnpmOverrides,
       pnpmNodeLinker: this.pnpmNodeLinker,
       pnpmWorkspaceSettings,
+      // Operator opt-in alone grants nothing: DepsService additionally requires
+      // an independently accepted root-owned manifest for the exact release.
+      immutableReleaseId: process.env.MASTRA_FACTORY_IMMUTABLE_RELEASE_ID,
     };
 
     this.logger.info('Updating dependency lockfile and installing dependencies');
@@ -808,6 +811,9 @@ export const tools = [${toolsExports.join(', ')}]`,
       this.logger.info('Done copying .npmrc file');
 
       if (shouldSkipInstall()) {
+        if (process.env.MASTRA_FACTORY_IMMUTABLE_RELEASE_ID !== undefined) {
+          throw new Error('IMMUTABLE_INSTALL_CANNOT_BE_SKIPPED');
+        }
         this.logger.info('Skipping dependency installation (MASTRA_BUILD_SKIP_INSTALL set)');
       } else {
         await this.installDependencies(

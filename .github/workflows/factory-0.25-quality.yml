@@ -28,6 +28,10 @@ on:
       - 'mastracode/web/pnpm-lock.yaml'
       - 'packages/cli/src/commands/api/factory-route-metadata.generated.ts'
       - 'stores/pg/**'
+      - 'packages/deployer/**'
+      - 'e2e-tests/monorepo/immutable-output.test.ts'
+      - 'e2e-tests/monorepo/vitest.immutable.config.ts'
+      - 'e2e-tests/monorepo/vitest.config.ts'
       - '.changeset/**'
       - '.github/workflows/factory-0.25-quality.yml'
 
@@ -102,13 +106,18 @@ jobs:
             --filter '@mastra/libsql...' \
             --filter '@mastra/platform-workspace...' \
             --filter '@mastra/code-sdk...' \
+            --filter '@mastra/deployer...' \
             --filter '@mastra/client-js...' \
             --filter '@mastra/hono...' \
             --filter 'mastra...'
 
       - name: Build Factory dependency graph
         timeout-minutes: 22
-        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/auth-better-auth...' --concurrency=2
+        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/deployer^...' --filter='@mastra/auth-better-auth...' --concurrency=2
+
+      - name: Build immutable Factory deployer package
+        timeout-minutes: 8
+        run: pnpm --filter @mastra/deployer build:lib
 
       - name: Build Factory package
         timeout-minutes: 8
@@ -135,6 +144,35 @@ jobs:
           after="$(sha256sum "$manifest" | awk '{print $1}')"
           test "$before" = "$after"
           git diff --exit-code -- "$manifest"
+
+      - name: Immutable Factory output trust and offline install regressions (no skips)
+        timeout-minutes: 12
+        env:
+          IMMUTABLE_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$IMMUTABLE_EXPECTED_HEAD"
+          pnpm --filter @mastra/deployer exec vitest run src/services/immutable-install.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-immutable-deployer.json" --maxWorkers=1
+          pnpm --dir e2e-tests/monorepo install --frozen-lockfile --ignore-scripts
+          # This explicit config has NO destructive local-registry globalSetup.
+          pnpm --dir e2e-tests/monorepo exec vitest run immutable-output.test.ts \
+            --config vitest.immutable.config.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-immutable-output.json" --maxWorkers=1
+          node -e '
+            const fs = require("node:fs");
+            for (const [file, expected, label] of [
+              [process.argv[1], 4, "Immutable deployer"],
+              [process.argv[2], 11, "Immutable output provenance"],
+            ]) {
+              const result = JSON.parse(fs.readFileSync(file, "utf8"));
+              if (result.numTotalTests !== expected || result.numPassedTests !== expected ||
+                  result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+                throw new Error(label + " exact-head coverage skipped or failed");
+              }
+              console.log(label + ": " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+            }
+          ' "$RUNNER_TEMP/factory-immutable-deployer.json" "$RUNNER_TEMP/factory-immutable-output.json"
 
       - name: Factory TypeScript check
         timeout-minutes: 8
