@@ -9,6 +9,8 @@ import type {
   VerifiedPrivateGpRevoke,
 } from './gp-pg-lease-issuer.js';
 import type { GpSignedHandoverPacket } from './gp-pg-handover-crypto.js';
+import type { GpHandoverScope } from './gp-pg-handover-crypto.js';
+import type { FactoryGpPgNativeScopeAttestorV1 } from './gp-pg-native-scope-attestor.js';
 
 // Intentionally NOT mounted by Factory's normal HTTP surface and NOT enabled
 // without pinned, server-held TLS keys and real authenticated PM/GP providers.
@@ -64,6 +66,7 @@ export class FactoryGpPgPrivateMtlsIngress {
   #issuer?: FactoryGpPgLeaseIssuerStorage;
   #readGpRevoke?: ReadGpRevoke;
   #contexts = new WeakMap<object, PrivateBody>();
+  #nativeContexts = new WeakMap<object, GpHandoverScope>();
   #server?: ReturnType<typeof createServer>;
 
   constructor(options: {
@@ -94,6 +97,9 @@ export class FactoryGpPgPrivateMtlsIngress {
     return { packet: body.packet, scope: body.packet.payload.scope, ttlSeconds: 60 };
   };
 
+  resolvePrivateNativeScope = async (context: object) =>
+    this.#nativeContexts.get(context) ?? null;
+
   resolvePrivateReceipt = (context: object) => {
     const body = this.#contexts.get(context);
     if (!this.#enabled || !body) return null;
@@ -121,7 +127,8 @@ export class FactoryGpPgPrivateMtlsIngress {
     return this.#readGpRevoke!(ops, body);
   };
 
-  async listen(issuer: FactoryGpPgLeaseIssuerStorage): Promise<{ port: number }> {
+  async listen(issuer: FactoryGpPgLeaseIssuerStorage,
+    nativeAttestor?: FactoryGpPgNativeScopeAttestorV1): Promise<{ port: number }> {
     if (!this.#enabled || !this.#tls || this.#server) {
       throw new Error('GP PG mTLS receiver not enabled or already listening');
     }
@@ -142,7 +149,8 @@ export class FactoryGpPgPrivateMtlsIngress {
       if (request.method !== 'POST' ||
         (request.url !== '/private/gp-pg/v1/issue' &&
           request.url !== '/private/gp-pg/v1/revoke' &&
-          request.url !== '/private/gp-pg/v1/receipt') ||
+          request.url !== '/private/gp-pg/v1/receipt' &&
+          request.url !== '/private/gp-pg/v1/native-scope') ||
         !String(request.headers['content-type']).startsWith('application/json')) {
         response.writeHead(404).end();
         return;
@@ -158,6 +166,22 @@ export class FactoryGpPgPrivateMtlsIngress {
         void (async () => {
           try {
             const body: unknown = JSON.parse(raw);
+            if (request.url === '/private/gp-pg/v1/native-scope') {
+              if (!nativeAttestor || !fields(body, ['version', 'scope']) ||
+                body.version !== 'factory_gp_pg_native_scope_request_v1' ||
+                !body.scope || typeof body.scope !== 'object') {
+                response.writeHead(400).end(); return;
+              }
+              const scopeContext = Object.freeze({ nonce: Symbol('factory-private-native-scope') });
+              this.#nativeContexts.set(scopeContext, body.scope as GpHandoverScope);
+              try {
+                const packet = await nativeAttestor.attest(scopeContext);
+                if (!packet) { response.writeHead(409).end(); return; }
+                response.writeHead(200, { 'Content-Type': 'application/json',
+                  'Cache-Control': 'no-store' }).end(JSON.stringify(packet));
+              } finally { this.#nativeContexts.delete(scopeContext); }
+              return;
+            }
             if (!isBody(body) ||
               (request.url !== '/private/gp-pg/v1/receipt' &&
                 request.url !== '/private/gp-pg/v1/' + body.kind)) {
