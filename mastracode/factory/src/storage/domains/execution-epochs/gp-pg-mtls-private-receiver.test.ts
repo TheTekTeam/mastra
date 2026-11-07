@@ -1,3 +1,4 @@
+import { FactoryGpPgPrivatePmAuthorityReaderV1 } from './gp-pg-server-pm-authority.js';
 import { createFactoryGpPgInstalledAppGrantReader, FACTORY_GP_PG_APP_GRANT_PROVIDER }
   from './gp-pg-server-app-grant.js';
 import { FactoryGpPgNativeScopeAttestorV1, FACTORY_GP_PG_NATIVE_SCOPE_ATTESTOR_CAPABILITY }
@@ -6,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomInt, randomUUID, sign, X509Certificate } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -85,12 +87,49 @@ function remoteWorker(input:Record<string,unknown>):Promise<{http:number;body:Re
     });
   });
 }
-async function fixture({withNative=false}={}){
+async function fixture({withNative=false,pmAuthorityPort=0}={}){
   if(!pgUrl)throw new Error('isolated PG18 URL required');
   const dir=mkdtempSync(join(tmpdir(),'factory-gp-mtls-'));
   const factoryCert=certificate(dir,'factory.local');
   const pmCert=certificate(dir,'pm.local');
   const {privateKey,publicKey}=generateKeyPairSync('ed25519');
+  const pmAuthority=pmAuthorityPort?new FactoryGpPgPrivatePmAuthorityReaderV1({
+    enabled:true,origin:'https://127.0.0.1:'+pmAuthorityPort,
+    serverName:'pm.local',ca:pmCert.cert,clientCert:factoryCert.cert,
+    clientKey:factoryCert.key,
+    serverCertSha256:new X509Certificate(pmCert.cert).fingerprint256
+      .replaceAll(':','').toLowerCase(),
+    pmPublicKey:publicKey,pmKeyId:'pm-authority-test-pin'
+  }):null;
+  // The cross-repository positive drives the REAL installed-App provider
+  // with TEST-ONLY Octokit, not a self-asserted grant response.
+  let currentAppScope:GpHandoverScope|undefined;
+  let appMembershipReads=0;
+  const installedAppReader=createFactoryGpPgInstalledAppGrantReader({
+    enabled:pmAuthorityPort>0,
+    github:{
+      getAppOctokit:()=>({apps:{getAuthenticated:async()=>({
+        data:{slug:'tek-test'}
+      })}}),
+      getInstallationOctokit:installationId=>{
+        if(!currentAppScope||installationId!==currentAppScope.appInstallationId)
+          throw new Error('Test installation pin mismatch');
+        const s=currentAppScope;
+        return {
+          apps:{listReposAccessibleToInstallation:async()=>{
+            appMembershipReads++;
+            return {data:{total_count:1,repositories:[{
+              id:s.repositoryId,full_name:'TheTekTeam/HTAI'
+            }]}};
+          }},
+          repos:{get:async()=>({data:{
+            id:s.repositoryId,full_name:'TheTekTeam/HTAI',
+            owner:{id:s.repositoryOwnerId}
+          }})}
+        };
+      }
+    }
+  });
   const ingress=new FactoryGpPgPrivateMtlsIngress({
     enabled:true,serverKey:factoryCert.key,serverCert:factoryCert.cert,
     clientCa:pmCert.cert,
@@ -117,7 +156,8 @@ async function fixture({withNative=false}={}){
     resolvePrivateReceipt:ingress.resolvePrivateReceipt,
     resolvePrivateRevokeIdentity:ingress.resolvePrivateRevokeIdentity,
     resolvePrivateRevoke:ingress.resolvePrivateRevoke,
-    readAuthenticatedPm:async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
+    readAuthenticatedPm:pmAuthority?pmAuthority.readConsumed:
+      async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
       const now=(await ops.databaseNow!()).getTime();
       return {source:'authenticated_live_pm_v9_authority_v1' as const,actor:'gp' as const,
         current:true as const,gpSessionVerified:true as const,
@@ -141,7 +181,7 @@ async function fixture({withNative=false}={}){
       unknownCount:0 as const,unsettledEffectCount:0 as const,
       remoteExecutionSupported:false as const
     }),
-    readLiveAppGrant:async(ops,s,binding)=>({
+    readLiveAppGrant:pmAuthority?installedAppReader:async(ops,s,binding)=>({
       source:'authenticated_github_app_grant_v1' as const,
       grantActive:true as const,factoryOrgId:s.factoryOrgId,projectId:s.projectId,
       repositoryId:s.repositoryId,repositoryOwnerId:s.repositoryOwnerId,
@@ -156,6 +196,7 @@ async function fixture({withNative=false}={}){
     input:{name:'HTAI mTLS '+randomUUID()}
   });
   const s=makeScope(project.id,orgId),now=new Date();
+  currentAppScope=s;
   const install=await storage.ops.insertOne('source_control_installations',{
     org_id:s.factoryOrgId,integration_id:'github',connected_by_user_id:'gp-native-test-owner',
     external_id:String(s.appInstallationId),provider_metadata:{},created_at:now
@@ -188,7 +229,8 @@ async function fixture({withNative=false}={}){
     enabled:true,storage,privateKey:nativeKeys.privateKey,
     keyId:'factory-test-pin',
     resolvePrivateScope:ingress.resolvePrivateNativeScope,
-    readAuthenticatedPmV8:async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
+    readAuthenticatedPmV8:pmAuthority?pmAuthority.readPreconsent:
+      async(ops:FactoryStorageOps,_ctx:object,s:GpHandoverScope)=>{
       const t=(await ops.databaseNow!()).getTime();
       return {source:'authenticated_current_pm_gp_v8_preconsent_v1' as const,
         actor:'gp' as const,sessionVerified:true as const,
@@ -210,7 +252,7 @@ async function fixture({withNative=false}={}){
       pendingCount:0 as const,unknownCount:0 as const,
       unsettledEffectCount:0 as const,remoteExecutionSupported:false as const
     }),
-    readLiveAppGrant:async(ops,s,binding)=>({
+    readLiveAppGrant:pmAuthority?installedAppReader:async(ops,s,binding)=>({
       source:'authenticated_github_app_grant_v1' as const,
       grantActive:true as const,factoryOrgId:s.factoryOrgId,projectId:s.projectId,
       repositoryId:s.repositoryId,repositoryOwnerId:s.repositoryOwnerId,
@@ -224,7 +266,8 @@ async function fixture({withNative=false}={}){
     key:pmCert.key.toString(),
     serverPin:new X509Certificate(factoryCert.cert).fingerprint256.replaceAll(':','').toLowerCase()
   };
-  return {s,client,packet:signed(s,privateKey),storage,issuer,ingress,dir,privateKey,nativeKeys,
+  return {s,client,packet:signed(s,privateKey),storage,issuer,ingress,dir,privateKey,nativeKeys,pmAuthority,
+    appMembershipReads:()=>appMembershipReads,
     dispose:async()=>{await ingress.close();await storage.close();
       rmSync(dir,{recursive:true,force:true});}};
 }
@@ -430,10 +473,21 @@ describe('Factory native PG App authority through installed GithubIntegration',(
   });
 });
 
+async function availableLocalPort(){
+  const server=createNetServer();
+  await new Promise<void>((ok,no)=>{server.once('error',no);
+    server.listen(0,'127.0.0.1',ok);});
+  const address=server.address();
+  if(!address||typeof address==='string')throw new Error('No test port');
+  const port=address.port;
+  await new Promise<void>(ok=>server.close(()=>ok()));
+  return port;
+}
 const pmCrossRoot=process.env.GP_PG_PM_TEST_WORKTREE;
 describe('cross-repository GP HTTPS to real Factory PG18 handover',()=>{
   it.skipIf(!pgUrl||!pmCrossRoot)('uses actual PM v9 and Factory locked PG18 lease through pinned mTLS',async()=>{
-    const f=await fixture({withNative:true});
+    const pmAuthorityPort=await availableLocalPort();
+    const f=await fixture({withNative:true,pmAuthorityPort});
     try{
       expect(f.nativeKeys).not.toBeNull();
       const pmSigningKeyPath=join(f.dir,'pm-test-signing.key');
@@ -447,7 +501,7 @@ describe('cross-repository GP HTTPS to real Factory PG18 handover',()=>{
         repositoryId:f.s.repositoryId,repositoryOwnerId:f.s.repositoryOwnerId,
         appInstallationId:f.s.appInstallationId,
         ownerEpoch:f.s.ownerEpoch,mappingDigest:f.s.mappingDigest,
-        port:f.client.port,pmSigningKeyPath,factorySignerPublicKeyPath,
+        port:f.client.port,pmAuthorityPort,pmSigningKeyPath,factorySignerPublicKeyPath,
         factoryCertPath:join(f.dir,'factory.local.pem'),
         pmCertPath:join(f.dir,'pm.local.pem'),
         pmTlsKeyPath:join(f.dir,'pm.local.key')
@@ -470,6 +524,7 @@ describe('cross-repository GP HTTPS to real Factory PG18 handover',()=>{
         FACTORY_GP_PG_HANDOVER_CONSUMPTIONS_SCHEMA.name,
         {org_id:f.s.factoryOrgId,factory_project_id:f.s.projectId});
       expect(rows.length).toBe(1);
+      expect(f.appMembershipReads()).toBeGreaterThanOrEqual(2);
     }finally{await f.dispose();}
   });
 });
