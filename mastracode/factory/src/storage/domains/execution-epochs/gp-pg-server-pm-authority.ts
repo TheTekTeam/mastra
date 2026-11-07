@@ -120,7 +120,10 @@ export class FactoryGpPgPrivatePmAuthorityReaderV1 {
         !/^[A-Za-z0-9_-]{86}$/.test(raw.signature))return null;
       const p=raw.payload!;
       const now=(await ops.databaseNow()).getTime();
-      if(p.version!=='pm_gp_pg_private_authority_v1'||
+      // v2 semantic contract is a same-DB durable native-intent pause plus
+      // zero unsettled dispatch under PM BEGIN IMMEDIATE. Never accept v1,
+      // whose signature did not establish these facts.
+      if(p.version!=='pm_gp_pg_private_authority_v2'||
         p.audience!=='factory_pg_epoch_locked_handover'||
         p.keyId!==this.#keyId||p.phase!==phase||p.challengeId!==challengeId||
         p.scopeTupleSha256!==gpV9ScopeTupleDigest(scope)||
@@ -147,6 +150,7 @@ export class FactoryGpPgPrivatePmAuthorityReaderV1 {
     if(!p)return null;
     return {
       source:'authenticated_current_pm_gp_v8_preconsent_v1',
+      // Derived from authenticated v2 PM proof, not a body assertion.
       actor:'gp',sessionVerified:true,csrfVerified:true,
       consentUnrevoked:true,projectSelected:true,writerPaused:true,
       dispatchPending:0,factoryOrgId:scope.factoryOrgId,projectId:scope.projectId,
