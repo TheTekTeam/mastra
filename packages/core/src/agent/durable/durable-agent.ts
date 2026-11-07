@@ -9,6 +9,11 @@ import type { PubSub } from '../../events/pubsub';
 import { isRunLocalTopic } from '../../events/topics';
 import { validateModelTimeoutSettings } from '../../llm/model/model-settings';
 import type { MastraModelConfig } from '../../llm/model/shared.types';
+import {
+  beforeCoreAgentPreparation,
+  beforeCoreDurableRecovery,
+  assertCoreSynchronousIngress,
+} from '../../loop/shared/core-effect-admission';
 import { getRunStreamSlot, getScopeStreamSlot } from '../../loop/shared/stream-until-idle-helpers';
 import { createTimeoutAbortSignal, isMastraTimeoutError } from '../../loop/timeout';
 import type { Mastra } from '../../mastra';
@@ -2264,6 +2269,7 @@ export class DurableAgent<
    * @internal
    */
   override __fork(): Agent<TAgentId, TTools, TOutput> {
+    assertCoreSynchronousIngress('synchronous-clone-construction');
     const sharedChannels = this.#wrappedAgent.getChannels();
     const innerFork = this.#wrappedAgent.__fork();
 
@@ -3046,6 +3052,8 @@ export class DurableAgent<
     messages: MessageListInput,
     options?: DurableAgentStreamOptions<TOutput>,
   ): Promise<DurableAgentStreamResult<TOutput>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     options = await this.#resolveExecutionOptions(applyReservedMemoryContextKeys(options));
 
     // Delegate to the idle-loop wrapper when `untilIdle` is set.
@@ -3373,6 +3381,8 @@ export class DurableAgent<
     resumeData: unknown,
     options?: DurableAgentResumeOptions<TOutput>,
   ): Promise<DurableAgentStreamResult<TOutput>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     if (agentThreadStreamRuntime.isResumeFenced(runId, this.getPubSub())) {
       // The fenced run can never continue, so the rejected caller must not find it in
       // listSuspendedRuns() afterwards (#27619).
@@ -4238,6 +4248,8 @@ export class DurableAgent<
     runId: string,
     options?: DurableAgentRecoverOptions<TOutput>,
   ): Promise<DurableAgentStreamResult<TOutput>> {
+    const admission = beforeCoreDurableRecovery();
+    if (admission) await admission;
     if (!this.#mastra) {
       throw new MastraError({
         id: 'DURABLE_AGENT_RECOVER_NO_MASTRA',
@@ -4697,6 +4709,8 @@ export class DurableAgent<
     messages: MessageListInput,
     options?: DurableAgentStreamOptions<TOutput>,
   ): Promise<FullOutput<TOutput>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     options = await this.#resolveExecutionOptions(applyReservedMemoryContextKeys(options));
 
     // Enforce agent-level FGA (agents:execute) before durable execution — see
@@ -5159,6 +5173,8 @@ export class DurableAgent<
   async recoverActiveRuns(
     options: DurableAgentRecoverActiveRunsOptions = {},
   ): Promise<DurableAgentRecoverActiveRunsResult> {
+    const admission = beforeCoreDurableRecovery();
+    if (admission) await admission;
     if (this.#mastra?.__shuttingDown) return { recovered: [], succeeded: 0, failed: 0 };
     const { runId, ...discoveryOptions } = options;
 
