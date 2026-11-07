@@ -173,13 +173,17 @@ describe('opt-in immutable Factory output provenance (no registry/network)', () 
   it('rejects ignored executable source outside the attested output tree', async () => {
     const f = await fixture();
     await mkdir(join(f.projectRoot, 'src', 'mastra'), { recursive: true });
-    await writeFile(join(f.sourceRoot, '.gitignore'), 'mastracode/web/src/mastra/hidden.ts\n');
+    await writeFile(join(f.sourceRoot, '.gitignore'), 'mastracode/web/src/mastra/hidden.ts\nmastracode/web/.env.production\n');
     execFileSync('git', ['-C', f.sourceRoot, 'add', '.gitignore']);
     execFileSync('git', ['-C', f.sourceRoot, '-c', 'user.name=Fixture',
       '-c', 'user.email=fixture@example.invalid', 'commit', '-q', '-m', 'ignore fixture']);
     f.approved.sourceHead = execFileSync('git', ['-C', f.sourceRoot, 'rev-parse', 'HEAD'],
       { encoding: 'utf8' }).trim();
-    await writeFile(join(f.projectRoot, 'src', 'mastra', 'hidden.ts'), 'export const hidden = true;');
+    const hidden = join(f.projectRoot, 'src', 'mastra', 'hidden.ts');
+    await writeFile(hidden, 'export const hidden = true;');
+    await expect(f.verify()).rejects.toThrow('IMMUTABLE_IGNORED_SOURCE_NOT_APPROVED');
+    await rm(hidden);
+    await writeFile(join(f.projectRoot, '.env.production'), 'SECRET_SOURCE_OVERRIDE=1\n');
     await expect(f.verify()).rejects.toThrow('IMMUTABLE_IGNORED_SOURCE_NOT_APPROVED');
   });
 
