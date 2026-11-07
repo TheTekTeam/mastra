@@ -55,6 +55,54 @@ manifest itself, remove its non-authoritative marker only as part of that
 separate approval, and install it root-owned without user-writable/symlink
 parents. An approval is scoped to **one** immutable source/candidate root set.
 
+## Two independent builds — additional reproducibility proof
+
+The source-only `factory-immutable-two-builds.mjs` is a **read-only qualification
+harness**, not a build runner. It never invokes `pnpm`, the legacy web `deploy`
+script, a registry, a database or a production service. Only run it after TWO
+independently staged, source-built candidates exist, each at the same accepted
+source HEAD with its own root, output, runtime and lockfiles:
+
+```sh
+node packages/deployer/factory-immutable-two-builds.mjs verify-two \\
+  ACCEPTED_40_CHAR_HEAD \\
+  ABS_SOURCE_A ABS_RUNTIME_A ABS_SOURCE_B ABS_RUNTIME_B
+```
+
+A successful proof requires **all 13** linked first-party dependencies from
+`mastracode/web/package.json` to be pinned as local `file:` tarballs in each
+candidate runtime, and 12 (excluding the CLI) in each generated output.
+Each first-party lock importer must resolve the matching `file:` spec with
+correct SHA-512 integrity; neither runtime nor output may silently use registry
+versions, `link:` or `workspace:` instead. Every candidate external package and
+snapshot record must match its accepted-source lock metadata, including exact
+third-party version and integrity. Both independently built candidate manifests,
+locks, tarball digests and generated asset trees must match. Source HEAD, lock
+and no-symlink, no-hardlink boundaries are also checked.
+
+The proof emits only `candidateOnly:true`. **It cannot install an approval**;
+#47's independently controlled owner-private approval path and the accepted
+infrastructure #227 full Factory/PG source/tar/dist verifiers remain mandatory.
+It deliberately fails if the actual generated-output lock, local tar closure or
+source-clone lock integrity is missing. This is the current expected result on
+the unqualified e789 candidate. Do not forge fixtures or reuse the live F2E
+lock to turn a failure green.
+
+The standalone fake-fixture regression is safe and bypasses destructive
+monorepo globalSetup:
+
+```sh
+node --test packages/deployer/factory-immutable-two-builds.test.mjs
+```
+
+**Remaining prerequisite:** a separately accepted deterministic candidate
+_producer_ must construct the two roots, build/pack all 13 first-party modules
+from the accepted SHA, reconcile output third-party imports to the approved
+source lock, and prove two offline frozen installs without unexpected registry
+resolution. This read-only harness makes unqualified candidates impossible to
+mistake for approved releases; it does not pretend to supply the missing
+candidate producer, source bundles or frozen output lock.
+
 ## Non-goals and safeguards
 
 - No registry fallback or lockfile regeneration in approved mode.
