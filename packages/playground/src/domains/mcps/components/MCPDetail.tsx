@@ -1,0 +1,228 @@
+import type { McpServerInfo, McpToolInfo } from '@mastra/client-js';
+import { Badge } from '@mastra/playground-ui/components/Badge';
+import { CopyButton } from '@mastra/playground-ui/components/CopyButton';
+import {
+  Entity,
+  EntityContent,
+  EntityDescription,
+  EntityIcon,
+  EntityName,
+} from '@mastra/playground-ui/components/Entity';
+import { Txt } from '@mastra/playground-ui/components/Txt';
+import { FolderIcon } from '@mastra/playground-ui/icons/FolderIcon';
+import { Icon } from '@mastra/playground-ui/icons/Icon';
+import { McpServerIcon } from '@mastra/playground-ui/icons/McpServerIcon';
+import { raisedSurfaceStyle } from '@mastra/playground-ui/primitives/raised-surface';
+import { cn } from '@mastra/playground-ui/utils/cn';
+import { useEffect, useRef, useState } from 'react';
+import { useMCPServerTools } from '../hooks/useMCPServerTools';
+import { ToolIconMap } from '@/domains/tools';
+import { useLinkComponent } from '@/lib/framework';
+
+export interface MCPDetailProps {
+  isLoading: boolean;
+  server?: McpServerInfo;
+}
+
+declare global {
+  interface Window {
+    MASTRA_SERVER_HOST: string;
+    MASTRA_SERVER_PORT: string;
+  }
+}
+
+export const MCPDetail = ({ isLoading, server }: MCPDetailProps) => {
+  const [{ sseUrl, httpStreamUrl }, setUrls] = useState<{ sseUrl: string; httpStreamUrl: string }>({
+    sseUrl: '',
+    httpStreamUrl: '',
+  });
+
+  useEffect(() => {
+    if (!server) return;
+
+    const host = window.MASTRA_SERVER_HOST;
+    const port = window.MASTRA_SERVER_PORT;
+
+    let baseUrl = null;
+    if (host && port) {
+      baseUrl = `http://${host}:${port}`;
+    }
+
+    const effectiveBaseUrl = baseUrl || 'http://localhost:4111';
+    const sseUrl = `${effectiveBaseUrl}/api/mcp/${server.id}/sse`;
+    const httpStreamUrl = `${effectiveBaseUrl}/api/mcp/${server.id}/mcp`;
+
+    setUrls({ sseUrl, httpStreamUrl });
+  }, [server]);
+
+  if (isLoading) return null;
+
+  if (!server)
+    return (
+      <div className="grid h-full min-w-min content-start items-start overflow-x-auto overflow-y-auto">
+        <Txt as="h1" variant="heading" tone="muted" className="py-20 text-center">
+          Server not found
+        </Txt>
+      </div>
+    );
+
+  // MCP v2 servers speak Streamable HTTP only; the SSE endpoint exists for 1.x servers.
+  // Servers that predate transport reporting are 1.x, so absence means SSE is available.
+  const hasSse = server.transports?.includes('sse') ?? true;
+  const commandLineConfig = `npx -y mcp-remote ${hasSse ? sseUrl : httpStreamUrl}`;
+
+  return (
+    <div className="grid h-full min-w-min grid-cols-[1fr_1fr] overflow-x-auto overflow-y-auto">
+      <div className="mx-auto w-full max-w-2xl px-5 py-8">
+        <Txt as="h1" variant="heading" tone="ink" className="pb-4">
+          {server.name}
+        </Txt>
+
+        <div className="flex items-center gap-1 pb-4">
+          <Badge icon={<FolderIcon />} size="sm">
+            Version
+          </Badge>
+          <Badge size="sm">{server.version_detail.version}</Badge>
+        </div>
+
+        <Txt tone="muted" className="pb-4">
+          {hasSse
+            ? 'This MCP server can be accessed through multiple transport methods. Choose the one that best fits your use case.'
+            : 'This MCP server speaks Streamable HTTP only (protocol 2026-07-28).'}
+        </Txt>
+
+        <div className="flex flex-col gap-4">
+          {/* HTTP Stream */}
+          <div className={cn(raisedSurfaceStyle, 'rounded-lg p-4')}>
+            <Badge icon={<span className="mr-1 w-6 font-mono font-medium text-accent1">HTTP</span>}>
+              Regular HTTP Endpoint
+            </Badge>
+
+            <Txt tone="muted" className="pt-1 pb-2">
+              Use for stateless HTTP transport with streamable responses.
+            </Txt>
+
+            <div className="flex items-start gap-2">
+              <Txt className="rounded-lg bg-muted px-2 py-1">{httpStreamUrl}</Txt>
+              <div className="pt-1">
+                <CopyButton tooltip="Copy HTTP Stream URL" content={httpStreamUrl} />
+              </div>
+            </div>
+          </div>
+
+          {/* SSE (legacy servers only) */}
+          {hasSse && (
+            <div className={cn(raisedSurfaceStyle, 'rounded-lg p-4')}>
+              <Badge icon={<span className="mr-1 w-6 font-mono font-medium text-accent1">SSE</span>}>
+                Server-Sent Events
+              </Badge>
+
+              <Txt tone="muted" className="pt-1 pb-2">
+                Use for real-time communication via SSE.
+              </Txt>
+
+              <div className="flex items-start gap-2">
+                <Txt className="rounded-lg bg-muted px-2 py-1">{sseUrl}</Txt>
+                <div className="pt-1">
+                  <CopyButton tooltip="Copy SSE URL" content={sseUrl} />
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Command Line */}
+          <div className={cn(raisedSurfaceStyle, 'rounded-lg p-4')}>
+            <Badge icon={<span className="mr-1 w-6 font-mono font-medium text-accent1">CLI</span>}>Command Line</Badge>
+
+            <Txt tone="muted" className="pt-1 pb-2">
+              Use for local command-line access via npx and mcp-remote.
+            </Txt>
+
+            <div className="flex items-start gap-2">
+              <Txt className="rounded-lg bg-muted px-2 py-1">{commandLineConfig}</Txt>
+              <div className="pt-1">
+                <CopyButton tooltip="Copy Command Line Config" content={commandLineConfig} />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="h-full overflow-y-scroll border-l border-border">
+        <McpToolList server={server} />
+      </div>
+    </div>
+  );
+};
+
+const McpToolList = ({ server }: { server: McpServerInfo }) => {
+  const { data: tools = {}, isLoading } = useMCPServerTools(server);
+
+  if (isLoading) return null;
+
+  const toolsKeyArray = Object.keys(tools);
+
+  return (
+    <div className="overflow-y-scroll p-5">
+      <div className="flex items-center gap-2 text-foreground">
+        <Icon size="lg" className="rounded-md bg-muted p-1">
+          <McpServerIcon />
+        </Icon>
+
+        <Txt variant="heading" as="h2">
+          Available Tools
+        </Txt>
+      </div>
+
+      <div className="flex flex-col gap-2 pt-4">
+        {toolsKeyArray.map(toolId => {
+          const tool = tools[toolId];
+
+          return <ToolEntry key={toolId} tool={tool} serverId={server.id} />;
+        })}
+      </div>
+    </div>
+  );
+};
+
+/** Check if a tool has an MCP App UI resource */
+function hasAppUi(meta?: Record<string, unknown>): boolean {
+  if (!meta) return false;
+  const ui = meta.ui as { resourceUri?: string } | undefined;
+  if (typeof ui?.resourceUri === 'string' && ui.resourceUri.startsWith('ui://')) return true;
+  if (typeof meta['ui/resourceUri'] === 'string' && meta['ui/resourceUri'].startsWith('ui://')) return true;
+  return false;
+}
+
+const ToolEntry = ({ tool, serverId }: { tool: McpToolInfo; serverId: string }) => {
+  const linkRef = useRef<HTMLAnchorElement>(null);
+  const { Link, paths } = useLinkComponent();
+
+  const ToolIconComponent =
+    tool.toolType === 'agent'
+      ? ToolIconMap.agent
+      : tool.toolType === 'workflow'
+        ? ToolIconMap.workflow
+        : ToolIconMap.tool;
+  const isAppTool = hasAppUi(tool._meta);
+
+  return (
+    <Entity onClick={() => linkRef.current?.click()}>
+      <EntityIcon>
+        <ToolIconComponent className="group-hover/entity:text-accent6" />
+      </EntityIcon>
+
+      <EntityContent>
+        <EntityName>
+          <span className="flex items-center gap-2">
+            <Link ref={linkRef} href={paths.mcpServerToolLink(serverId, tool.name)}>
+              {tool.name}
+            </Link>
+            {isAppTool && <Badge size="xs">App</Badge>}
+          </span>
+        </EntityName>
+        <EntityDescription>{tool.description}</EntityDescription>
+      </EntityContent>
+    </Entity>
+  );
+};
