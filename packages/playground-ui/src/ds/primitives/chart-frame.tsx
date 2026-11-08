@@ -36,16 +36,34 @@ export function timeXAxis({
     <XAxis
       dataKey={xKey}
       height={X_AXIS_HEIGHT}
-      tick={props => (
-        <ChartTimeTick
-          x={Number(props.x)}
-          y={Number(props.y)}
-          payload={props.payload}
-          picked={picked}
-          count={data.length}
-          plotWidth={plotWidth}
-        />
-      )}
+      tick={(props: unknown) => {
+        if (typeof props !== 'object' || props === null) return null;
+        const rawPayload = 'payload' in props ? props.payload : undefined;
+        if (
+          typeof rawPayload !== 'object' ||
+          rawPayload === null ||
+          !('index' in rawPayload) ||
+          typeof rawPayload.index !== 'number' ||
+          !('value' in rawPayload)
+        ) {
+          return null;
+        }
+        const payload = {
+          value: String(rawPayload.value),
+          index: rawPayload.index,
+          offset: 'offset' in rawPayload && typeof rawPayload.offset === 'number' ? rawPayload.offset : undefined,
+        };
+        return (
+          <ChartTimeTick
+            x={'x' in props ? Number(props.x) : 0}
+            y={'y' in props ? Number(props.y) : 0}
+            payload={payload}
+            picked={picked}
+            count={data.length}
+            plotWidth={plotWidth}
+          />
+        );
+      }}
       tickLine={false}
       axisLine={false}
       tickMargin={6}
