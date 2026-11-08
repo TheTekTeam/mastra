@@ -6,6 +6,14 @@ const mocks = vi.hoisted(() => ({
   subscribe: vi.fn(async (_input: { sessionScope: string }) => ({ created: true })),
   unsubscribe: vi.fn(async (_input: { sessionScope: string }) => ({ removed: true })),
   getPullRequest: vi.fn(async () => ({ data: { base: { repo: { id: 99 } } } })),
+  getIssue: vi.fn(async () => ({ data: {
+    number: 7, title: 'Expected issue', body: 'Ground truth', state: 'open',
+    user: { login: 'reporter' }, html_url: 'https://github.com/mastra-ai/mastra/issues/7',
+    assignees: [], labels: [{ name: 'status: needs triage' }], comments: 0,
+  } })),
+  listIssueComments: vi.fn(async () => ({ data: [] })),
+  addLabels: vi.fn(async () => ({ data: [] })),
+  removeLabel: vi.fn(async () => ({ data: [] })),
   getRepositoryAccess: vi.fn(async () => ({
     cloneUrl: 'https://github.com/mastra-ai/mastra.git',
     authorization: { scheme: 'bearer' as const, token: 'fresh-gh-token' },
@@ -56,7 +64,15 @@ const githubStub = {
   versionControl: {
     getRepositoryAccess: mocks.getRepositoryAccess,
   },
-  getInstallationOctokit: () => ({ pulls: { get: mocks.getPullRequest } }),
+  getInstallationOctokit: () => ({
+    pulls: { get: mocks.getPullRequest },
+    issues: {
+      get: mocks.getIssue,
+      listComments: mocks.listIssueComments,
+      addLabels: mocks.addLabels,
+      removeLabel: mocks.removeLabel,
+    },
+  }),
   upsertFactoryTriageComment: mocks.upsertTriageComment,
 } as unknown as GithubIntegration;
 
@@ -276,6 +292,35 @@ describe('GitHub subscription entry points', () => {
     );
 
     expect(mocks.subscribe.mock.calls.map(([input]) => input.sessionScope)).toEqual(['/worktrees/a', '/worktrees/b']);
+  });
+
+
+  it('uses the session-bound GitHub App for issue reads without accepting a repository override', async () => {
+    const tools = createGithubSubscriptionTools(authenticatedRequestContext(), githubStub) as any;
+    expect(tools.github_read_issue).toBeDefined();
+    const issue = await tools.github_read_issue.execute({ issueNumber: 7 });
+    expect(issue).toMatchObject({ repository: 'mastra-ai/mastra', number: 7, title: 'Expected issue' });
+    expect(mocks.getIssue).toHaveBeenCalledWith({ owner: 'mastra-ai', repo: 'mastra', issue_number: 7 });
+    expect(tools.github_read_issue.inputSchema.safeParse({ issueNumber: 0 }).success).toBe(false);
+  });
+
+  it('reads comments and updates labels through the linked repository rather than sandbox gh', async () => {
+    const tools = createGithubSubscriptionTools(authenticatedRequestContext(), githubStub) as any;
+    const comments = await tools.github_list_issue_comments.execute({ issueNumber: 7 });
+    expect(comments).toMatchObject({ repository: 'mastra-ai/mastra', issueNumber: 7, truncated: false });
+    expect(mocks.listIssueComments).toHaveBeenCalledWith({
+      owner: 'mastra-ai', repo: 'mastra', issue_number: 7, per_page: 100, page: 1,
+    });
+    const result = await tools.github_update_issue_labels.execute({
+      issueNumber: 7, add: ['status: auto-triaged'], remove: ['status: needs triage'],
+    });
+    expect(result.repository).toBe('mastra-ai/mastra');
+    expect(mocks.addLabels).toHaveBeenCalledWith({
+      owner: 'mastra-ai', repo: 'mastra', issue_number: 7, labels: ['status: auto-triaged'],
+    });
+    expect(mocks.removeLabel).toHaveBeenCalledWith({
+      owner: 'mastra-ai', repo: 'mastra', issue_number: 7, name: 'status: needs triage',
+    });
   });
 
   it('upserts the Factory triage handoff through the active installation and repository', async () => {
