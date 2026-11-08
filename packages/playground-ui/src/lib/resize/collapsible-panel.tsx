@@ -1,6 +1,6 @@
 import type { CSSProperties, Ref } from 'react';
 import { useImperativeHandle, useRef, useState } from 'react';
-import type { PanelProps } from 'react-resizable-panels';
+import type { PanelImperativeHandle, PanelProps } from 'react-resizable-panels';
 import { Panel, usePanelRef } from 'react-resizable-panels';
 import { PanelEdgeIcon } from './panel-edge-icon';
 import { panelIconButtonClass } from './panel-icon-button';
@@ -49,7 +49,13 @@ export const CollapsiblePanel = ({
   // mounts already collapsed from a persisted layout (it opens at `minSize`).
   const sizeBeforeCollapseRef = useRef<number | null>(null);
   const internalPanelRef = usePanelRef();
-  const panelRef = externalPanelRef ?? internalPanelRef;
+  // Callback refs do not expose .current. Keep our own handle and forward it to the caller.
+  const panelRef = typeof externalPanelRef === 'function' ? internalPanelRef : (externalPanelRef ?? internalPanelRef);
+  useImperativeHandle<PanelImperativeHandle | null, PanelImperativeHandle | null>(
+    typeof externalPanelRef === 'function' ? externalPanelRef : undefined,
+    () => internalPanelRef.current,
+    [externalPanelRef, internalPanelRef],
+  );
 
   const collapsedThreshold = typeof collapsedSize === 'number' ? collapsedSize : 0;
   // Read the live size: `isCollapsed` only updates after the library's first `onResize`,

@@ -119,6 +119,19 @@ describe('CollapsiblePanel', () => {
     expect(panelMocks.handle.resize).not.toHaveBeenCalled();
   });
 
+  it('keeps the panel controllable when a caller supplies a callback ref', () => {
+    const onPanel = vi.fn<(panel: PanelImperativeHandle | null) => void>();
+    const { unmount } = render(<Harness minSize={280} defaultSize={300} panelRef={onPanel} />);
+
+    expect(onPanel).toHaveBeenCalledWith(panelMocks.handle);
+    fireEvent.click(screen.getByTestId('resize-collapsed'));
+    fireEvent.click(screen.getByRole('button', { name: 'Expand panel' }));
+
+    expect(panelMocks.handle.resize).toHaveBeenCalledWith(300);
+    unmount();
+    expect(onPanel).toHaveBeenLastCalledWith(null);
+  });
+
   describe('expand button', () => {
     it('opens at the default size when the panel mounted collapsed (e.g. after a reload)', () => {
       render(<Harness minSize={280} defaultSize={300} />);

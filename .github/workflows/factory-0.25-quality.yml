@@ -14,6 +14,7 @@ on:
       - ready_for_review
     paths:
       - 'mastracode/factory/**'
+      - 'packages/playground-ui/**'
       - 'packages/core/src/llm/model/**'
       - 'packages/core/src/loop/shared/**'
       - 'packages/core/src/loop/workflows/agentic-execution/**'
@@ -94,6 +95,7 @@ jobs:
         run: |
           pnpm install --frozen-lockfile --ignore-scripts \
             --filter '@mastra/factory...' \
+            --filter '@mastra/playground-ui...' \
             --filter '@mastra/auth-better-auth...' \
             --filter '@mastra/auth-workos...' \
             --filter '@mastra/e2b...' \
@@ -106,9 +108,9 @@ jobs:
             --filter '@mastra/hono...' \
             --filter 'mastra...'
 
-      - name: Build Factory dependency graph
+      - name: Build Factory and Playground UI dependency graph
         timeout-minutes: 22
-        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/auth-better-auth...' --concurrency=2
+        run: pnpm turbo build --filter='@mastra/factory^...' --filter='@mastra/playground-ui^...' --filter='@mastra/auth-better-auth...' --concurrency=2
 
       - name: Build Factory package
         timeout-minutes: 8
@@ -143,6 +145,27 @@ jobs:
       - name: Factory type-aware lint
         timeout-minutes: 8
         run: pnpm --filter @mastra/factory exec oxlint --type-aware .
+
+      - name: Playground UI declarations and regression tests (exact PR head)
+        timeout-minutes: 10
+        env:
+          PLAYGROUND_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$PLAYGROUND_EXPECTED_HEAD"
+          pnpm --filter @mastra/playground-ui build
+          pnpm --filter @mastra/playground-ui exec vitest run \
+            src/lib/resize/collapsible-panel.test.tsx \
+            src/domains/memory/components/__tests__/flame-graph.test.tsx \
+            --reporter=json --outputFile="$RUNNER_TEMP/playground-ui.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests < 67 || result.numPassedTests !== result.numTotalTests ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("Playground UI declarations or regression test coverage skipped or failed");
+            }
+            console.log("Playground UI exact-head: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/playground-ui.json"
 
       - name: Core A2 TypeScript check
         timeout-minutes: 8

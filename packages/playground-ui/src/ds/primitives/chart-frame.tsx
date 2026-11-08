@@ -3,7 +3,6 @@ import { chartYTickCount, niceYTicks, pickTimeTicks } from './chart-axes';
 import type { ChartSize, ChartXLabels } from './chart-axes';
 import { CHART_AXIS_FONT_SIZE, X_AXIS_HEIGHT } from './chart-layout';
 import { ChartTimeTick } from './chart-time-tick';
-import type { ChartTimeTickProps } from './chart-time-tick';
 import { CHART_LABEL_COLOR } from '@/ds/tokens';
 
 /** A chart's height: pixels, or `fill` to grow with its parent (a flex column, e.g. a card). */
@@ -37,9 +36,34 @@ export function timeXAxis({
     <XAxis
       dataKey={xKey}
       height={X_AXIS_HEIGHT}
-      tick={(props: Omit<ChartTimeTickProps, 'picked' | 'count' | 'plotWidth'>) => (
-        <ChartTimeTick {...props} picked={picked} count={data.length} plotWidth={plotWidth} />
-      )}
+      tick={(props: unknown) => {
+        if (typeof props !== 'object' || props === null) return null;
+        const rawPayload = 'payload' in props ? props.payload : undefined;
+        if (
+          typeof rawPayload !== 'object' ||
+          rawPayload === null ||
+          !('index' in rawPayload) ||
+          typeof rawPayload.index !== 'number' ||
+          !('value' in rawPayload)
+        ) {
+          return null;
+        }
+        const payload = {
+          value: String(rawPayload.value),
+          index: rawPayload.index,
+          offset: 'offset' in rawPayload && typeof rawPayload.offset === 'number' ? rawPayload.offset : undefined,
+        };
+        return (
+          <ChartTimeTick
+            x={'x' in props ? Number(props.x) : 0}
+            y={'y' in props ? Number(props.y) : 0}
+            payload={payload}
+            picked={picked}
+            count={data.length}
+            plotWidth={plotWidth}
+          />
+        );
+      }}
       tickLine={false}
       axisLine={false}
       tickMargin={6}
