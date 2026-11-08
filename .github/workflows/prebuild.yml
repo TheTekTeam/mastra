@@ -14,7 +14,8 @@ permissions: {}
 jobs:
   changes:
     name: Detect code changes
-    runs-on: starsling-ubuntu-24.04-2
+    # Lightweight metadata job can run on our existing organization-owned Dell runners.
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
     outputs:
