@@ -1679,13 +1679,13 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
         },
         "sourceVersion": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 256
+          "enum": [
+            "factory_0_25_issue_v1",
+            "legacy_github_issue_v1"
+          ]
         },
         "sourceSnapshotId": {
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 256
+          "$ref": "#/$defs/__schema1"
         },
         "pullRequestNumber": {
           "type": "integer",
@@ -1693,20 +1693,20 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
           "maximum": 9007199254740991
         },
         "headSha": {
-          "$ref": "#/$defs/__schema1"
+          "$ref": "#/$defs/__schema2"
         },
         "reviewerIdentity": {
           "type": "string",
           "const": "modelspend-reviewer"
         },
         "reviewHeadSha": {
-          "$ref": "#/$defs/__schema1"
+          "$ref": "#/$defs/__schema2"
         },
         "ciHeadSha": {
-          "$ref": "#/$defs/__schema1"
+          "$ref": "#/$defs/__schema2"
         },
         "mergeSha": {
-          "$ref": "#/$defs/__schema1"
+          "$ref": "#/$defs/__schema2"
         },
         "nativeEffectId": {
           "$ref": "#/$defs/__schema0"
@@ -1729,8 +1729,7 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
           "const": true
         },
         "proofDigest": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+          "$ref": "#/$defs/__schema1"
         }
       },
       "required": [
@@ -1766,6 +1765,10 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
           "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
         },
         "__schema1": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "__schema2": {
           "type": "string",
           "pattern": "^[a-f0-9]{40}$"
         }
