@@ -16,6 +16,7 @@ import type { LeaseProvider } from '../../events/pubsub';
 import type { EventCallback } from '../../events/types';
 import { Mastra } from '../../mastra';
 import type { Agent } from '../agent';
+import { createSignal } from '../signals';
 import { AgentThreadStreamRuntime } from '../thread-stream-runtime';
 
 const AGENT_THREAD_KEY_SEPARATOR = '\u0000';
@@ -114,6 +115,31 @@ class ControlledLeasePubSub extends PubSub implements LeaseProvider {
 }
 
 describe('registerRun thread lease', () => {
+  it('preserves legacy unmanaged wake availability on pubsub failure while managed ingress stays deny-only', async () => {
+    const runtime = new AgentThreadStreamRuntime();
+    const pubsub = new ControlledLeasePubSub();
+    pubsub.failAcquire = true;
+    const agent = {
+      id: 'legacy-optimistic-wake',
+      stream: vi.fn(async () => ({ runId: 'legacy-wake', fullStream: new ReadableStream() })),
+    } as unknown as Agent<any, any, any, any>;
+    const threadId = 'legacy-wake-thread';
+    const resourceId = 'legacy-wake-user';
+    try {
+      const signal = runtime.sendSignal(
+        agent,
+        createSignal({ type: 'user-message', contents: 'legacy availability' }),
+        { resourceId, threadId },
+        pubsub,
+      );
+      await expect(signal.accepted).resolves.toMatchObject({ action: 'wake' });
+      expect(agent.stream).toHaveBeenCalledTimes(1);
+      expect(pubsub.owners.size).toBe(0);
+    } finally {
+      runtime.resetForTests();
+    }
+  });
+
   it('acquires the thread lease for a plain thread-bound run and releases it on completion', async () => {
     const runtime = new AgentThreadStreamRuntime();
     const pubsub = new ControlledLeasePubSub();
