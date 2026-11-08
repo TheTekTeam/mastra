@@ -129,6 +129,21 @@ describe('authenticated native issue completion readback', () => {
     expect(verifier).toHaveBeenCalledTimes(1);
   });
 
+  it('does not report an issue complete before the independently attested acceptance time', async () => {
+    const f = await fixture();
+    const { proofDigest: _previousDigest, ...payload } = f.receipt;
+    const futurePayload = { ...payload, acceptedAt: new Date(Date.now() + 60_000).toISOString() };
+    f.receipt = { ...futurePayload, proofDigest: issueCompletionDigest(futurePayload) };
+    await persistCandidate(f);
+
+    // A valid persisted candidate and an otherwise positive external verifier
+    // must not make future-dated completion visible at this public readback.
+    const verifier = vi.fn(async () => true);
+    const response = await app(f.seed, verifier).request(f.path);
+    expect(response.status).toBe(409);
+    expect(verifier).not.toHaveBeenCalled();
+  });
+
   it('restricted source-only ingress is insert-once, audited, collision-safe and has no HTTP POST', async () => {
     const f = await fixture();
     const denied = await f.seed.workItems.acceptIssueCompletionEvidenceCandidate({

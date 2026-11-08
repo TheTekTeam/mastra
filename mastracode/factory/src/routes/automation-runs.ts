@@ -335,6 +335,12 @@ export class AutomationRunRoutes extends Route<AutomationRunRoutesDeps> {
           if (result.kind !== 'found') {
             return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
           }
+          // The MCP readback already fences future-dated acceptance. Apply the
+          // same fail-closed rule at the authenticated Factory source boundary.
+          const acceptedAtMs = Date.parse(result.receipt.acceptedAt);
+          if (!Number.isFinite(acceptedAtMs) || acceptedAtMs > Date.now()) {
+            return c.json({ error: 'Issue completion evidence not independently verifiable' }, 409);
+          }
           // A receipt from the local DB is only a *candidate*. The independent
           // authenticated GitHub/HP6 verifier is mandatory before HTTP 200.
           const verify = this.deps.verifyIssueCompletionEvidence;
