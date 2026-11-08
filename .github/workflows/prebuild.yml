@@ -32,7 +32,8 @@ jobs:
           echo "Local runner tooling present on $RUNNER_NAME"
 
   changes:
-    if: github.event_name == 'pull_request'
+    # Never schedule user-controlled fork PR workflow content on Dell's self-hosted runners.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     name: Detect code changes
     # Lightweight metadata job can run on our existing organization-owned Dell runners.
     runs-on: [self-hosted, Linux, X64]
