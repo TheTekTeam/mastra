@@ -393,7 +393,8 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
   async consumePrivateV3Nonce(invocation: object): Promise<'consumed_audit_only' | 'denied' | 'not_ready'> {
     if (!this.#enabled || !(this.storage instanceof PgFactoryStorage)) return 'not_ready';
     const identity = this.#resolveChallengeIdentity!(invocation);
-    if (!identity?.factoryOrgId || !identity.projectId || !uuid(identity.leaseIntentId) || !uuid(identity.challengeId))
+    const challengeId = identity?.challengeId;
+    if (!identity?.factoryOrgId || !identity.projectId || !uuid(identity.leaseIntentId) || !uuid(challengeId))
       return 'denied';
     try {
       return await this.storage.withTransaction(async ops => {
@@ -416,7 +417,7 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
           const challenge = await ops.findOne<ChallengeRow>(CHALLENGES, {
             ...where,
             lease_intent_id: identity.leaseIntentId,
-            challenge_id: identity.challengeId,
+            challenge_id: challengeId,
             tombstone_sha256: tomb.tombstone_sha256,
           });
           if (!challenge) return null;
