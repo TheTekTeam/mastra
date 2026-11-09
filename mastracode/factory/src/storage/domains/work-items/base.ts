@@ -2399,7 +2399,6 @@ export class WorkItemsStorage extends FactoryStorageDomain {
         receipt.workItemRevision !== item.revision ||
         !this.#isTerminal(toWorkItem(item)) ||
         item.external_source?.integrationId !== 'github' ||
-        item.external_source?.type !== 'issue' ||
         item.metadata?.githubIssueNumber !== receipt.sourceIssueNumber ||
         typeof item.metadata?.githubRepositoryId !== 'string' ||
         item.metadata.githubRepositoryId.length === 0 ||
@@ -2407,10 +2406,14 @@ export class WorkItemsStorage extends FactoryStorageDomain {
           // Version is the caller's exact normalized Factory source *shape*,
           // not a guessed GitHub updated_at or mutable controller epoch.
           (receipt.sourceVersion === 'factory_0_25_issue_v1' &&
+            item.external_source.type === 'issue' &&
             item.external_source.externalId === `github-issue:${receipt.sourceIssueNumber}`) ||
           (receipt.sourceVersion === 'legacy_github_issue_v1' &&
             ['github_issue', 'github'].includes(item.external_source.type) &&
-            item.external_source.externalId === String(receipt.sourceIssueNumber))
+            item.external_source.externalId === String(receipt.sourceIssueNumber) &&
+            // Require a repository name on legacy numeric-ID source records
+            // so an issue from a different repository can never match.
+            item.metadata?.repository === receipt.sourceRepository)
         ) ||
         (item.metadata?.repository !== undefined && item.metadata.repository !== receipt.sourceRepository)
       ) return { kind: 'ambiguous' };

@@ -117,4 +117,92 @@ describe.skipIf(!testPgUrl)('native issue completion PG18 immutable cross-client
       await first.storage.close();
     }
   });
+  it('accepts only exact persisted legacy GitHub issue readbacks, never new candidates', async () => {
+    const first = await openClient();
+    try {
+      const orgId = 'legacy-qa-' + randomUUID();
+      const repositoryId = 'aaaaaaa1-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+      const repository = 'TheTekTeam/HTAI';
+      const project = await first.projects.create({
+        orgId, userId: 'fixture-attestor', input: { name: 'Legacy readback QA' },
+      });
+      const { item } = await first.workItems.upsert({
+        orgId, userId: 'fixture-attestor', factoryProjectId: project.id,
+        input: {
+          title: 'Legacy GitHub issue 42', stages: ['intake'],
+          externalSource: { integrationId: 'github', type: 'github_issue', externalId: '42' },
+          metadata: { githubIssueNumber: 42, githubRepositoryId: repositoryId, repository },
+        },
+      });
+      const effectId = randomUUID();
+      const now = new Date();
+      const payload: IssueCompletionPayload = {
+        ok: true, source: 'independent_native_issue_completion_readback',
+        kind: 'issue_completion', schemaVersion: 1,
+        projectId: project.id, workItemId: item.id, workItemRevision: item.revision,
+        sourceRepository: repository, sourceIssueNumber: 42,
+        sourceVersion: 'legacy_github_issue_v1', sourceSnapshotId: 'd'.repeat(64),
+        pullRequestNumber: 67, headSha: 'a'.repeat(40),
+        reviewerIdentity: 'modelspend-reviewer', reviewHeadSha: 'a'.repeat(40),
+        ciHeadSha: 'a'.repeat(40), mergeSha: 'b'.repeat(40),
+        nativeEffectId: effectId, acceptedAt: now.toISOString(),
+        finalEffectState: 'completed', executionVerified: true,
+        independentNativeCompletion: true,
+      };
+      const receipt = { ...payload, proofDigest: issueCompletionDigest(payload) };
+      await first.storage.ops.insertOne('factory_deferred_decisions', {
+        id: effectId, org_id: orgId, factory_project_id: project.id,
+        evaluation_id: 'fixture-evaluation', work_item_id: item.id, source_key: null,
+        idempotency_key: 'fixture-' + effectId, effect_ordinal: 0,
+        effect_hash: 'fixture-hash', causal_chain: [], actor: null,
+        decision: { type: 'fixture-completed' }, status: 'succeeded',
+        attempts: 1, available_at: now, completed_at: now,
+        created_at: now, updated_at: now,
+      });
+      expect(await first.workItems.acceptIssueCompletionEvidenceCandidate({
+        orgId, factoryProjectId: project.id, receipt, verify: async () => true,
+      })).toEqual({ status: 'conflict' });
+      expect(await first.workItems.getIssueCompletionEvidence(orgId, project.id, item.id))
+        .toEqual({ kind: 'missing' });
+
+      // Historical persistence fixture, not a live legacy proof admission route.
+      await first.storage.ops.insertOne('factory_issue_completion_evidence', {
+        id: randomUUID(), org_id: orgId, factory_project_id: project.id,
+        work_item_id: item.id, work_item_revision: item.revision,
+        proof: receipt, proof_digest: receipt.proofDigest,
+        issuer_id: 'modelspend-reviewer', independently_verified_at: now, created_at: now,
+      });
+      const found = { kind: 'found', receipt, repositoryId };
+      const lookup = () => first.workItems.getIssueCompletionEvidence(orgId, project.id, item.id);
+      const change = (type: string, externalId: string, integrationId = 'github', name?: string) =>
+        first.storage.ops.updateMany('work_items', { org_id: orgId, id: item.id }, {
+          external_source: { integrationId, type, externalId },
+          metadata: {
+            githubIssueNumber: 42, githubRepositoryId: repositoryId,
+            ...(name !== undefined ? { repository: name } : {}),
+          },
+        });
+      expect(await lookup()).toEqual(found);
+      await change('github', '42', 'github', repository);
+      expect(await lookup()).toEqual(found);
+      await change('issue', 'github-issue:42', 'github', repository);
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      await change('github', 'github-issue:42', 'github', repository);
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      await change('github_issue', '43', 'github', repository);
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      await change('github_issue', '42', 'gitlab', repository);
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      await change('github_issue', '42', 'github', 'TheTekTeam/Other');
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      await change('github_issue', '42');
+      expect(await lookup()).toEqual({ kind: 'ambiguous' });
+      expect(await first.workItems.getIssueCompletionEvidence('other-tenant', project.id, item.id))
+        .toEqual({ kind: 'missing' });
+      expect(await first.workItems.getIssueCompletionEvidence(orgId, randomUUID(), item.id))
+        .toEqual({ kind: 'missing' });
+    } finally {
+      await first.storage.close();
+    }
+  });
 });
