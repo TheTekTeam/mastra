@@ -8,7 +8,7 @@
  * Factory transition path keeps one exclusive current stage per item.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema, CollectionWhere, FactoryStorageOps } from '@mastra/core/storage';
@@ -27,6 +27,8 @@ import {
   readBoardVersion,
   trackBoardWrites,
 } from './board-version.js';
+import { parseIssueCompletionReceipt } from './completion-evidence.js';
+import type { IssueCompletionReceipt } from './completion-evidence.js';
 
 export type WorkItemStage = string;
 
@@ -997,7 +999,37 @@ function ingressWasAccepted(row: GovernanceDbRow | null): boolean {
   return 'status' in row.result && row.result.status === 'accepted';
 }
 
+/** No HTTP writer exists: only a separately accepted independent attestor may
+ * persist a candidate. This unique org/project/work-item row is read through
+ * a transaction and independently verified at the authenticated route.
+ */
+const FACTORY_ISSUE_COMPLETION_EVIDENCE_SCHEMA: CollectionSchema = {
+  name: 'factory_issue_completion_evidence',
+  columns: {
+    id: { type: 'uuid-pk' },
+    org_id: { type: 'text' },
+    factory_project_id: { type: 'text' },
+    work_item_id: { type: 'text' },
+    work_item_revision: { type: 'integer' },
+    proof: { type: 'json' },
+    proof_digest: { type: 'text' },
+    issuer_id: { type: 'text' },
+    independently_verified_at: { type: 'timestamp' },
+    created_at: { type: 'timestamp' },
+  },
+  uniqueIndexes: [{
+    name: 'factory_issue_completion_tenant_item_unique',
+    columns: ['org_id', 'factory_project_id', 'work_item_id'],
+  }],
+};
+
+export type FactoryIssueCompletionLookup =
+  | { kind: 'missing' }
+  | { kind: 'ambiguous' }
+  | { kind: 'found'; receipt: IssueCompletionReceipt; repositoryId: string };
+
 const FACTORY_GOVERNANCE_SCHEMAS: CollectionSchema[] = [
+  FACTORY_ISSUE_COMPLETION_EVIDENCE_SCHEMA,
   {
     name: 'factory_rule_ingress',
     columns: {
@@ -2219,6 +2251,193 @@ export class WorkItemsStorage extends FactoryStorageDomain {
    * alone is not proof of a skill dispatch: only exactly one internally
    * consistent accepted binding produces a receipt. This never starts work.
    */
+  /**
+   * Candidate final GitHub issue evidence. Storage is necessary but NEVER
+   * sufficient: the HTTP route must separately verify live GitHub App/HP6/CI,
+   * merge and source snapshot on the exact bound revision. A terminal phase
+   * alone does not prove code execution or independent acceptance.
+   *
+   * Absent or stale candidates are fail-closed; no route persists evidence.
+   */
+  /**
+   * Restricted INTERNAL, immutable attestation ingress. No API route or
+   * operator-write grant calls this today. Future HP6 acceptance wiring must
+   * supply the independently configured GitHub App verifier; missing/failed
+   * verification returns 'unverified' without a DB write.
+   *
+   * A candidate's source snapshot and work-item revision are rechecked in the
+   * transaction AFTER external verification, fencing concurrent card edits.
+   * The row is a durable owner/issuer audit receipt; competing or ambiguous
+   * attestations are never overwritten or auto-replayed.
+   */
+  async acceptIssueCompletionEvidenceCandidate(input: {
+    orgId: string;
+    factoryProjectId: string;
+    receipt: unknown;
+    verify: (
+      receipt: IssueCompletionReceipt,
+      scope: { orgId: string; factoryProjectId: string; repositoryId: string },
+    ) => Promise<boolean>;
+  }): Promise<{ status: 'committed' | 'replayed' | 'conflict' | 'unverified' }> {
+    const receipt = parseIssueCompletionReceipt(input.receipt);
+    if (!receipt || receipt.projectId !== input.factoryProjectId) return { status: 'unverified' };
+    const prior = await this.get({ orgId: input.orgId, id: receipt.workItemId });
+    const repositoryId = prior?.metadata?.githubRepositoryId;
+    if (!prior || prior.factoryProjectId !== input.factoryProjectId ||
+        typeof repositoryId !== 'string' || !repositoryId) return { status: 'unverified' };
+    try {
+      if (!(await input.verify(receipt, {
+        orgId: input.orgId, factoryProjectId: input.factoryProjectId, repositoryId,
+      }))) return { status: 'unverified' };
+    } catch {
+      return { status: 'unverified' };
+    }
+    try {
+      return await this.storage.withTransaction(async ops => {
+        const item = await ops.findOne<WorkItemDbRow>('work_items', {
+          org_id: input.orgId,
+          factory_project_id: input.factoryProjectId,
+          id: receipt.workItemId,
+        });
+        if (!item || item.revision !== receipt.workItemRevision ||
+            !this.#isTerminal(toWorkItem(item)) ||
+            item.external_source?.integrationId !== 'github' ||
+            item.external_source?.type !== 'issue' ||
+            item.external_source.externalId !== `github-issue:${receipt.sourceIssueNumber}` ||
+            receipt.sourceVersion !== 'factory_0_25_issue_v1' ||
+            item.metadata?.githubIssueNumber !== receipt.sourceIssueNumber ||
+            item.metadata?.githubRepositoryId !== repositoryId ||
+            (item.metadata?.repository !== undefined && item.metadata.repository !== receipt.sourceRepository)) {
+          return { status: 'conflict' as const };
+        }
+        const effect = await ops.findOne<{
+          work_item_id: string | null; status: string; completed_at: Date | null;
+        }>('factory_deferred_decisions', {
+          id: receipt.nativeEffectId,
+          org_id: input.orgId,
+          factory_project_id: input.factoryProjectId,
+        });
+        if (!effect || effect.work_item_id !== receipt.workItemId ||
+            effect.status !== 'succeeded' || !effect.completed_at) {
+          return { status: 'conflict' as const };
+        }
+        const key = {
+          org_id: input.orgId,
+          factory_project_id: input.factoryProjectId,
+          work_item_id: receipt.workItemId,
+        };
+        const existing = await ops.findOne<{
+          proof: unknown; proof_digest: string; issuer_id: string; independently_verified_at: Date;
+        }>('factory_issue_completion_evidence', key);
+        if (existing) {
+          const persisted = parseIssueCompletionReceipt(existing.proof);
+          return { status: persisted &&
+            existing.issuer_id === 'modelspend-reviewer' &&
+            existing.independently_verified_at instanceof Date &&
+            existing.proof_digest === receipt.proofDigest &&
+            persisted.proofDigest === receipt.proofDigest &&
+            JSON.stringify(persisted) === JSON.stringify(receipt) ? 'replayed' as const : 'conflict' as const };
+        }
+        const now = new Date();
+        await ops.insertOne('factory_issue_completion_evidence', {
+          id: randomUUID(),
+          ...key,
+          work_item_revision: receipt.workItemRevision,
+          proof: receipt,
+          proof_digest: receipt.proofDigest,
+          issuer_id: 'modelspend-reviewer',
+          independently_verified_at: now,
+          created_at: now,
+        });
+        return { status: 'committed' as const };
+      });
+    } catch {
+      // Crash/constraint uncertainty may have committed the write. Never
+      // automatically replay or overwrite a durable attestation on exception.
+      return { status: 'unverified' };
+    }
+  }
+
+  async getIssueCompletionEvidence(
+    orgId: string,
+    factoryProjectId: string,
+    workItemId: string,
+  ): Promise<FactoryIssueCompletionLookup> {
+    return this.storage.withTransaction<FactoryIssueCompletionLookup>(async ops => {
+      const item = await ops.findOne<WorkItemDbRow>('work_items', {
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+        id: workItemId,
+      });
+      if (!item) return { kind: 'missing' };
+      const rows = await ops.findMany<{
+        org_id: string;
+        factory_project_id: string;
+        work_item_id: string;
+        work_item_revision: number;
+        proof: unknown;
+        proof_digest: string;
+        issuer_id: string;
+        independently_verified_at: Date;
+      }>('factory_issue_completion_evidence', {
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+        work_item_id: workItemId,
+      }, { limit: 2 });
+      if (rows.length === 0) return { kind: 'missing' };
+      if (rows.length !== 1) return { kind: 'ambiguous' };
+      const row = rows[0]!;
+      const receipt = parseIssueCompletionReceipt(row.proof);
+      if (
+        !receipt ||
+        row.proof_digest !== receipt.proofDigest ||
+        row.issuer_id !== 'modelspend-reviewer' ||
+        !(row.independently_verified_at instanceof Date) ||
+        row.work_item_revision !== receipt.workItemRevision ||
+        receipt.projectId !== factoryProjectId ||
+        receipt.workItemId !== workItemId ||
+        receipt.workItemRevision !== item.revision ||
+        !this.#isTerminal(toWorkItem(item)) ||
+        item.external_source?.integrationId !== 'github' ||
+        item.external_source?.type !== 'issue' ||
+        item.metadata?.githubIssueNumber !== receipt.sourceIssueNumber ||
+        typeof item.metadata?.githubRepositoryId !== 'string' ||
+        item.metadata.githubRepositoryId.length === 0 ||
+        !(
+          // Version is the caller's exact normalized Factory source *shape*,
+          // not a guessed GitHub updated_at or mutable controller epoch.
+          (receipt.sourceVersion === 'factory_0_25_issue_v1' &&
+            item.external_source.externalId === `github-issue:${receipt.sourceIssueNumber}`) ||
+          (receipt.sourceVersion === 'legacy_github_issue_v1' &&
+            ['github_issue', 'github'].includes(item.external_source.type) &&
+            item.external_source.externalId === String(receipt.sourceIssueNumber))
+        ) ||
+        (item.metadata?.repository !== undefined && item.metadata.repository !== receipt.sourceRepository)
+      ) return { kind: 'ambiguous' };
+
+      // A completed run delivery is not a GitHub merge/review proof, but a
+      // missing or incomplete native effect *rules out* positive completion.
+      const effect = await ops.findOne<{
+        org_id: string;
+        factory_project_id: string;
+        work_item_id: string | null;
+        status: string;
+        completed_at: Date | null;
+      }>('factory_deferred_decisions', {
+        id: receipt.nativeEffectId,
+        org_id: orgId,
+        factory_project_id: factoryProjectId,
+      });
+      if (
+        !effect ||
+        effect.work_item_id !== workItemId ||
+        effect.status !== 'succeeded' ||
+        !effect.completed_at
+      ) return { kind: 'ambiguous' };
+      return { kind: 'found', receipt, repositoryId: item.metadata.githubRepositoryId as string };
+    });
+  }
+
   async getEnqueueReceipt(
     orgId: string,
     factoryProjectId: string,

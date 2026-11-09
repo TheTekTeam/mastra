@@ -67,22 +67,30 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout immutable PR head
+      - name: Checkout authenticated PR merge
         uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
         timeout-minutes: 15
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 2
           filter: blob:none
           persist-credentials: false
 
-      - name: Verify exact head identity
+      - name: Verify current-base merge and switch to exact head
         env:
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
           EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_MERGE: ${{ github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_MERGE"
+          test "$(git rev-parse HEAD^1)" = "$EXPECTED_BASE"
+          test "$(git rev-parse HEAD^2)" = "$EXPECTED_HEAD"
+          # The tested HEAD tree must be byte-identical to the authenticated
+          # synthetic PR merge. Otherwise CI would omit base changes.
+          test "$(git rev-parse HEAD^{tree})" = "$(git rev-parse "$EXPECTED_HEAD^{tree}")"
+          git checkout --force --detach "$EXPECTED_HEAD"
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          printf 'Exact PR head: %s\n' "$EXPECTED_HEAD"
+          printf 'Verified merge %s with base %s and exact head %s\n' "$EXPECTED_MERGE" "$EXPECTED_BASE" "$EXPECTED_HEAD"
 
       - name: Setup pinned Node and pnpm
         uses: ./.github/actions/setup-pnpm-node
@@ -257,6 +265,28 @@ jobs:
             }
             console.log("B1b/B2b PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
           ' "$RUNNER_TEMP/factory-b1b-b2b-pg18.json"
+
+      - name: Native issue completion storage PG18 cross-client replay (no skips)
+        timeout-minutes: 8
+        env:
+          COMPLETION_EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          FACTORY_COMPLETION_PG_TEST_URL: postgresql://factory_a0_ci:a0_ci_disposable_only@127.0.0.1:5432/factory_a0_ci
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$COMPLETION_EXPECTED_HEAD"
+          test -n "$FACTORY_COMPLETION_PG_TEST_URL"
+          pnpm --filter @mastra/factory exec vitest run \
+            src/storage/domains/work-items/completion-evidence.test.ts \
+            src/storage/domains/work-items/completion-evidence.pg.test.ts \
+            --reporter=json --outputFile="$RUNNER_TEMP/factory-completion-pg18.json" --maxWorkers=1
+          node -e '
+            const result = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+            if (result.numTotalTests !== 6 || result.numPassedTests !== 6 ||
+                result.numPendingTests !== 0 || result.numFailedTests !== 0) {
+              throw new Error("Factory issue completion PG18 tests skipped, missing or failed");
+            }
+            console.log("Factory issue completion PG18: " + result.numPassedTests + "/" + result.numTotalTests + " passed");
+          ' "$RUNNER_TEMP/factory-completion-pg18.json"
 
       - name: Factory receipt, skill and dispatcher regressions
         timeout-minutes: 12
