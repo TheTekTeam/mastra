@@ -43,7 +43,9 @@ jobs:
   factory-exact-head:
     name: Factory 0.25 exact-head build, typecheck, lint and tests
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == 'TheTekTeam/mastra' }}
-    runs-on: ubuntu-24.04
+    # TheTekTeam's existing organisation-wide Dell runners are reachable by
+    # this repository. Keep Factory validation on the self-hosted free tier.
+    runs-on: [self-hosted, Linux, X64, dev-cluster-dell]
     timeout-minutes: 45
     env:
       CI: 'true'
