@@ -1,0 +1,9 @@
+{
+  "status": "uninstalled-source-only-proposal",
+  "database": "PostgreSQL 18",
+  "baseFactoryPr": 59,
+  "upFile": "GP-B1-V3-PROPOSED-UP.sql",
+  "upSha256": "4d39a44cb6b5216b513cc39cb3d3c62a854949261b3060115cbdc8a4403d5879",
+  "downFile": "GP-B1-V3-PROPOSED-DOWN.sql",
+  "downSha256": "b0d03a8bceee6c75870179a71cf76bdd95445c11af0c28590ed2abb59f2dea33"
+}
