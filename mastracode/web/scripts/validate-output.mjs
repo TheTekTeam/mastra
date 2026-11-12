@@ -10,7 +10,7 @@
  *      has no `link:` / `workspace:` / `@internal/` specs (would break
  *      `npm install` at deploy time)
  *   3. SPA `index.html` — present in `factory/` under the output dir
- *   4. Factory `SKILL.md` files — packaged alongside the Web server bundle
+ *   4. Factory skills — packaged at output root or in the installed Factory dependency
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -68,11 +68,26 @@ if (!fs.existsSync(spaPath)) {
 // 4. Web Factory skills
 for (const skillName of ['configure-factory-rules', 'factory-plan', 'factory-review', 'factory-triage']) {
   const relativeSkillPath = path.join('factory-skills', skillName, 'SKILL.md');
-  const skillPath = path.join(outputDir, relativeSkillPath);
-  if (!fs.existsSync(skillPath)) {
-    fail(`Factory skill not found: ${relativeSkillPath}`);
+  // Factory is a runtime dependency: package-published skills live under its
+  // own node_modules directory. A consumer can also bundle skills at the root.
+  const candidates = [
+    path.join(outputDir, relativeSkillPath),
+    path.join(outputDir, 'node_modules', '@mastra', 'factory', relativeSkillPath),
+  ];
+  const skillPath = candidates.find(candidate => {
+    try {
+      const stat = fs.statSync(candidate);
+      const relative = path.relative(fs.realpathSync(outputDir), fs.realpathSync(candidate));
+      return stat.isFile() && stat.size > 0 && relative !== '..' &&
+        !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+    } catch {
+      return false;
+    }
+  });
+  if (!skillPath) {
+    fail('Factory skill not found in deployable output: ' + relativeSkillPath);
   } else {
-    ok(`Factory skill (${relativeSkillPath})`);
+    ok('Factory skill (' + path.relative(outputDir, skillPath) + ')');
   }
 }
 
