@@ -6,9 +6,9 @@
 import { createPublicKey } from 'node:crypto';
 import { PgFactoryStorage } from '@mastra/pg';
 import { FactoryExecutionEpochStorage } from './base.js';
-import { FactoryManagedCoreEffectStorage } from './managed-effect.js';
 import { FactoryGpPgB1V3NativeStorageOps } from './gp-pg-b1-v3-native-storageops.js';
 import type { FactoryGpPgRebindV3Expected } from './gp-pg-post-tombstone-v3.js';
+import { FactoryManagedCoreEffectStorage } from './managed-effect.js';
 
 const url = process.env.FACTORY_GP_B1_V3_NATIVE_PG_TEST_URL;
 const marker = process.env.FACTORY_GP_B1_V3_NATIVE_EPHEMERAL_MARKER;
@@ -53,15 +53,19 @@ const native = storage.registerDomain(
             challengeId: s.challengeId,
           }
         : null,
-    readPrivatePmV11: async (ops, ctx) =>
-      ctx === privateInvocation && s
-        ? {
-            source: 'independent_live_pm_v11_epoch_transition_v3',
-            packet: s.packet,
-            expected: s.expected,
-            verifiedAtMs: (await ops.databaseNow!()).getTime(),
-          }
-        : null,
+    readPrivatePmV11: async (ops, ctx) => {
+      if (ctx !== privateInvocation || !s) return null;
+      // Reproduce a PM verification that completes strictly after the native
+      // transaction's initial clock read. Without a fresh PG clock check,
+      // both workers can be incorrectly denied before nonce CAS.
+      await new Promise(resolve => setTimeout(resolve, 15));
+      return {
+        source: 'independent_live_pm_v11_epoch_transition_v3',
+        packet: s.packet,
+        expected: s.expected,
+        verifiedAtMs: (await ops.databaseNow!()).getTime(),
+      };
+    },
     pinnedPmKey: { keyId: init.pinnedKeyId, publicKey: createPublicKey(init.publicKeyPem) },
   }),
 );
