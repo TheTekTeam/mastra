@@ -6,12 +6,12 @@ import type { CollectionSchema, FactoryStorageOps } from '@mastra/core/storage';
 import { PgFactoryStorage } from '@mastra/pg';
 
 import { FACTORY_EXECUTION_EPOCHS_SCHEMA } from './base.js';
-import { FACTORY_CORE_MANAGER_LEASES_SCHEMA } from './managed-effect.js';
+import { canonicalV3AuthenticatedTombstoneDigest, canonicalV3RebindNonceKey } from './gp-pg-b1-rebind-v3-protocol.js';
 import { FACTORY_GP_PG_HANDOVER_REVOCATIONS_SCHEMA } from './gp-pg-lease-issuer.js';
 import type { ResolvePrivateGpRevoke, ResolvePrivateGpRevokeIdentity } from './gp-pg-lease-issuer.js';
-import { canonicalV3AuthenticatedTombstoneDigest, canonicalV3RebindNonceKey } from './gp-pg-b1-rebind-v3-protocol.js';
 import { inspectFactoryGpPgPostTombstoneV3 } from './gp-pg-post-tombstone-v3.js';
 import type { FactoryGpPgRebindV3Expected } from './gp-pg-post-tombstone-v3.js';
+import { FACTORY_CORE_MANAGER_LEASES_SCHEMA } from './managed-effect.js';
 
 /**
  * Actual FactoryStorageOps source prototype; no import/registration anywhere
@@ -393,7 +393,8 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
   async consumePrivateV3Nonce(invocation: object): Promise<'consumed_audit_only' | 'denied' | 'not_ready'> {
     if (!this.#enabled || !(this.storage instanceof PgFactoryStorage)) return 'not_ready';
     const identity = this.#resolveChallengeIdentity!(invocation);
-    if (!identity?.factoryOrgId || !identity.projectId || !uuid(identity.leaseIntentId) || !uuid(identity.challengeId))
+    const challengeId = identity?.challengeId;
+    if (!identity?.factoryOrgId || !identity.projectId || !uuid(identity.leaseIntentId) || !uuid(challengeId))
       return 'denied';
     try {
       return await this.storage.withTransaction(async ops => {
@@ -416,7 +417,7 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
           const challenge = await ops.findOne<ChallengeRow>(CHALLENGES, {
             ...where,
             lease_intent_id: identity.leaseIntentId,
-            challenge_id: identity.challengeId,
+            challenge_id: challengeId,
             tombstone_sha256: tomb.tombstone_sha256,
           });
           if (!challenge) return null;
@@ -430,12 +431,18 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
           )
             return null;
           const pm = await this.#readPrivatePm!(ops, invocation);
+          // The independent PM read can finish AFTER the earlier clock sample.
+          // Compare its verification timestamp with a new authoritative PG
+          // clock read, not the pre-read time (which falsely rejects valid
+          // independently verified packets on millisecond boundaries).
+          const verificationCheckedAtMs = (await ops.databaseNow!()).getTime();
           if (
             !pm ||
             pm.source !== 'independent_live_pm_v11_epoch_transition_v3' ||
+            !safePos(verificationCheckedAtMs) ||
             !safePos(pm.verifiedAtMs) ||
-            pm.verifiedAtMs > at ||
-            at - pm.verifiedAtMs > 5000
+            pm.verifiedAtMs > verificationCheckedAtMs ||
+            verificationCheckedAtMs - pm.verifiedAtMs > 5000
           )
             return null;
           const expected = pm.expected;
@@ -458,7 +465,7 @@ export class FactoryGpPgB1V3NativeStorageOps extends FactoryStorageDomain {
               pinnedKeyId: this.#pinnedKey!.keyId,
               pinnedPublicKey: this.#pinnedKey!.publicKey,
               expected,
-              factoryDbNowMs: at,
+              factoryDbNowMs: verificationCheckedAtMs,
             })
           )
             return null;
