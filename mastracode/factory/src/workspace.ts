@@ -47,7 +47,10 @@ import type { SourceControlSession, SourceControlStorageHandle } from './storage
 import type { WorkItemsStorage } from './storage/domains/work-items/base.js';
 import { parseSupervisorResourceId } from './supervisor/session.js';
 import { timedPhase } from './timing.js';
+import { FACTORY_SKILL_NAMES, trackFactorySandboxSetup } from './skills/invocation-readiness.js';
 import { mergeRequestNumberFromBranch, pullRequestNumberFromBranch } from './work-item-branch.js';
+
+export { FACTORY_SKILL_NAMES };
 
 const WORKSPACE_ID_PREFIX = 'mfw';
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
@@ -80,16 +83,6 @@ export function resolveLocalFactorySkillsPath(cwd: string = process.cwd()): stri
   );
 }
 const FACTORY_SKILLS_MOUNT = path.resolve(path.parse(process.cwd()).root, '__mastracode_factory_skills__');
-export const FACTORY_SKILL_NAMES = new Set([
-  'configure-factory-rules',
-  'factory-complete-issue',
-  'factory-gitlab-rereview',
-  'factory-gitlab-review',
-  'factory-plan',
-  'factory-rereview',
-  'factory-review',
-  'factory-triage',
-]);
 
 export class FactorySkillSource implements SkillSource {
   readonly #bundledSource = new LocalSkillSource({ basePath: BUNDLED_FACTORY_SKILLS_PATH });
@@ -534,12 +527,14 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
         // instance — `constructSessionEntry` runs on every open and would
         // stack a wrapper per call. Factory's setup runs first: a hook the
         // callback installed itself expects a prepared workspace.
-        sandbox.setOnStart(previous => async args => {
-          await timedPhase(`workspace.onStart(${args.outcome})`, async () => {
-            await setupHook(args);
-          });
-          await previous?.(args);
-        });
+        sandbox.setOnStart(previous => async args =>
+          trackFactorySandboxSetup(sandbox, async () => {
+            await timedPhase(`workspace.onStart(${args.outcome})`, async () => {
+              await setupHook(args);
+            });
+            await previous?.(args);
+          }),
+        );
         // Only a freshly constructed instance starts eagerly; the start itself
         // waits for this resolver to finish because the start hook reads
         // bindings declared further down.

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { resolveSkillInvocation, resolveSkillResumeInvocation, SkillInvocationError } from './service.js';
+import { trackFactorySandboxSetup } from './invocation-readiness.js';
 
 const SKILL_INSTRUCTIONS = 'Follow the entire factory-review protocol in extensive detail.';
 
@@ -165,5 +166,58 @@ describe('project-local skill discovery after lazy sandbox materialisation', () 
       code: 'skill_not_found',
     });
     expect(session.getWorkspace().sandbox.start).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('checkout setup generation safeguards for explicit skill invocation', () => {
+  const input = { resourceId: 'card-1', name: 'modelspend-implementation' };
+
+  it('blocks use of a cached project skill until onStart has finished and rescanned it', async () => {
+    let release!: () => void;
+    const setupGate = new Promise<void>(resolve => { release = resolve; });
+    const sandbox = { ensureRunning: vi.fn(async () => {}) };
+    let instructions = 'stale-worktree-instructions';
+    const refresh = vi.fn(async () => { instructions = 'fresh-checkout-instructions'; });
+    const get = vi.fn(async () => ({ name: input.name, instructions }));
+    const workspace = { sandbox, skills: { refresh, get, maybeRefresh: vi.fn(async () => {}) } };
+    const session = { getWorkspace: () => workspace };
+    const started = trackFactorySandboxSetup(sandbox as never, async () => { await setupGate; });
+    const pending = resolveSkillInvocation(makeController({ session }), input);
+    let complete = false;
+    void pending.then(() => { complete = true; }, () => { complete = true; });
+    await Promise.resolve();
+    expect(complete).toBe(false);
+    expect(refresh).not.toHaveBeenCalled();
+    release();
+    await started;
+    const result = await pending;
+    expect(result.message).toContain('fresh-checkout-instructions');
+    expect(result.message).not.toContain('stale-worktree-instructions');
+    expect(sandbox.ensureRunning).not.toHaveBeenCalled();
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it('shares one scan across concurrent missing project skills', async () => {
+    let release!: () => void;
+    const started = new Promise<void>(resolve => { release = resolve; });
+    let available = false;
+    const sandbox = { ensureRunning: vi.fn(async () => { await started; available = true; }) };
+    const refresh = vi.fn(async () => {});
+    const skills = {
+      maybeRefresh: vi.fn(async () => {}),
+      get: vi.fn(async () =>
+        available ? { name: input.name, instructions: 'verified-project-skill' } : undefined),
+      refresh,
+    };
+    const session = { getWorkspace: () => ({ sandbox, skills }) };
+    const results = Array.from({ length: 3 },
+      () => resolveSkillInvocation(makeController({ session }), input));
+    await Promise.resolve();
+    release();
+    const resolved = await Promise.all(results);
+    expect(resolved.every(r => r.message.includes('verified-project-skill'))).toBe(true);
+    expect(sandbox.ensureRunning).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });

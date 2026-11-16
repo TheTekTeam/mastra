@@ -4,6 +4,11 @@ import type { AgentController } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 import { formatSkillActivation } from '@mastra/core/workspace';
 import type { Workspace } from '@mastra/core/workspace';
+import {
+  awaitInFlightFactorySandboxSetup,
+  FACTORY_SKILL_NAMES,
+  refreshRepositorySkillsForInvocation,
+} from './invocation-readiness.js';
 
 export interface SkillInvocationInput {
   resourceId: string;
@@ -48,35 +53,24 @@ function escapeSkillBoundary(value: string): string {
 }
 
 /**
- * Resolve a project-local skill only after its session checkout exists.
- *
- * Factory intentionally constructs the workspace lazily: before the sandbox
- * starts, project skill roots are deliberately reported as empty. A single
- * explicit skill invocation may therefore miss a valid project-local skill
- * while bundled Factory skills are already available. Materialise *only on
- * an explicit miss*, through the sandbox's coalesced ensureRunning lifecycle;
- * never start sandboxes on metadata/listing paths or use a plain start()
- * call that may bypass the provider's startup hooks. No native work item,
- * lease, scheduler, permission or project configuration is changed here.
+ * Resolve a skill without letting a lazy project checkout masquerade as a
+ * missing skill. Bundled Factory skills are intentionally never forced to
+ * provision a project sandbox.
  */
 async function resolveInvocableSkill(session: SkillSession, name: string) {
   const workspace = session.getWorkspace();
   const skills = workspace.skills;
   await skills?.maybeRefresh();
   let skill = await skills?.get(name);
-  if (!skill && skills) {
-    // Factory's concrete session sandbox is a MastraSandbox. Other sandbox
-    // providers and entirely absent sandboxes cannot be force-started.
-    const sandbox = workspace.sandbox as
-      | (typeof workspace.sandbox & { ensureRunning?: () => Promise<void> })
-      | undefined;
-    if (sandbox && typeof sandbox.ensureRunning === 'function') {
-      await sandbox.ensureRunning();
-      // The onStart hook schedules a best-effort rescan; join a fresh scan
-      // here so the requested skill cannot race that background refresh.
-      await skills.refresh();
-      skill = await skills.get(name);
-    }
+  if (skill && !FACTORY_SKILL_NAMES.has(name) &&
+      await awaitInFlightFactorySandboxSetup(workspace)) {
+    // A cached repository skill may be stale during a replacement checkout.
+    await skills?.refresh();
+    skill = await skills?.get(name);
+  }
+  if (!skill && skills && !FACTORY_SKILL_NAMES.has(name)) {
+    await refreshRepositorySkillsForInvocation(workspace);
+    skill = await skills.get(name);
   }
   if (!skill || skill['user-invocable'] === false) {
     throw new SkillInvocationError('skill_not_found', `Skill not found: ${name}.`);
