@@ -70,3 +70,100 @@ describe('resolveSkillResumeInvocation', () => {
     });
   });
 });
+
+
+describe('project-local skill discovery after lazy sandbox materialisation', () => {
+  const input = { resourceId: 'card-1', name: 'modelspend-implementation' };
+  const projectSkill = {
+    name: input.name,
+    instructions: 'Use the reviewed project-local implementation protocol.',
+  };
+
+  function lazySession(options?: { startError?: Error; hidden?: boolean }) {
+    let materialized = false;
+    const ensureRunning = vi.fn(async () => {
+      if (options?.startError) throw options.startError;
+      materialized = true;
+    });
+    const refresh = vi.fn(async () => {});
+    const maybeRefresh = vi.fn(async () => {});
+    const get = vi.fn(async () =>
+      materialized
+        ? { ...projectSkill, ...(options?.hidden ? { 'user-invocable': false } : {}) }
+        : undefined,
+    );
+    const session = {
+      getWorkspace: () => ({
+        sandbox: { ensureRunning },
+        skills: { get, refresh, maybeRefresh },
+      }),
+      sendMessage: vi.fn(async () => {}),
+    };
+    return { session, ensureRunning, refresh, maybeRefresh, get };
+  }
+
+  it('resolves a project skill on first explicit invocation without a false missing-skill response', async () => {
+    const fixture = lazySession();
+    const result = await resolveSkillInvocation(makeController({ session: fixture.session }), input);
+    expect(result.skillName).toBe(input.name);
+    expect(result.message).toContain('Use the reviewed project-local implementation protocol.');
+    expect(fixture.ensureRunning).toHaveBeenCalledTimes(1);
+    expect(fixture.refresh).toHaveBeenCalledTimes(1);
+    expect(fixture.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves a project skill on a same-stage resume after a lazy start', async () => {
+    const fixture = lazySession();
+    const result = await resolveSkillResumeInvocation(makeController({ session: fixture.session }), input);
+    expect(result.skillName).toBe(input.name);
+    expect(result.message).toContain('Resume the active modelspend-implementation session');
+    expect(fixture.ensureRunning).toHaveBeenCalledTimes(1);
+    expect(fixture.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not materialise for a bundled skill that was already available', async () => {
+    const ensureRunning = vi.fn(async () => {});
+    const refresh = vi.fn(async () => {});
+    const session = {
+      getWorkspace: () => ({
+        sandbox: { ensureRunning },
+        skills: {
+          maybeRefresh: vi.fn(async () => {}),
+          refresh,
+          get: vi.fn(async () => ({ name: 'factory-review', instructions: SKILL_INSTRUCTIONS })),
+        },
+      }),
+    };
+    await resolveSkillInvocation(makeController({ session }), { resourceId: 'card-1', name: 'factory-review' });
+    expect(ensureRunning).not.toHaveBeenCalled();
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('fails closed rather than claiming a missing skill on sandbox start failure', async () => {
+    const fixture = lazySession({ startError: new Error('checkout_not_ready') });
+    await expect(resolveSkillInvocation(makeController({ session: fixture.session }), input)).rejects.toThrow(
+      'checkout_not_ready',
+    );
+    expect(fixture.refresh).not.toHaveBeenCalled();
+  });
+
+  it('does not allow hidden project skills after materialisation', async () => {
+    const fixture = lazySession({ hidden: true });
+    await expect(resolveSkillInvocation(makeController({ session: fixture.session }), input)).rejects.toMatchObject({
+      code: 'skill_not_found',
+    });
+    expect(fixture.ensureRunning).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start a provider without an explicit ensureRunning lifecycle', async () => {
+    const get = vi.fn(async () => undefined);
+    const session = { getWorkspace: () => ({
+      sandbox: { start: vi.fn() },
+      skills: { maybeRefresh: vi.fn(async () => {}), get, refresh: vi.fn() },
+    }) };
+    await expect(resolveSkillInvocation(makeController({ session }), input)).rejects.toMatchObject({
+      code: 'skill_not_found',
+    });
+    expect(session.getWorkspace().sandbox.start).not.toHaveBeenCalled();
+  });
+});

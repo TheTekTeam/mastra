@@ -47,6 +47,43 @@ function escapeSkillBoundary(value: string): string {
   return value.replaceAll('</skill>', '&lt;/skill&gt;');
 }
 
+/**
+ * Resolve a project-local skill only after its session checkout exists.
+ *
+ * Factory intentionally constructs the workspace lazily: before the sandbox
+ * starts, project skill roots are deliberately reported as empty. A single
+ * explicit skill invocation may therefore miss a valid project-local skill
+ * while bundled Factory skills are already available. Materialise *only on
+ * an explicit miss*, through the sandbox's coalesced ensureRunning lifecycle;
+ * never start sandboxes on metadata/listing paths or use a plain start()
+ * call that may bypass the provider's startup hooks. No native work item,
+ * lease, scheduler, permission or project configuration is changed here.
+ */
+async function resolveInvocableSkill(session: SkillSession, name: string) {
+  const workspace = session.getWorkspace();
+  const skills = workspace.skills;
+  await skills?.maybeRefresh();
+  let skill = await skills?.get(name);
+  if (!skill && skills) {
+    // Factory's concrete session sandbox is a MastraSandbox. Other sandbox
+    // providers and entirely absent sandboxes cannot be force-started.
+    const sandbox = workspace.sandbox as
+      | (typeof workspace.sandbox & { ensureRunning?: () => Promise<void> })
+      | undefined;
+    if (sandbox && typeof sandbox.ensureRunning === 'function') {
+      await sandbox.ensureRunning();
+      // The onStart hook schedules a best-effort rescan; join a fresh scan
+      // here so the requested skill cannot race that background refresh.
+      await skills.refresh();
+      skill = await skills.get(name);
+    }
+  }
+  if (!skill || skill['user-invocable'] === false) {
+    throw new SkillInvocationError('skill_not_found', `Skill not found: ${name}.`);
+  }
+  return skill;
+}
+
 /** Kicks a run off from a plain prompt, for runs that activate no skill. */
 export async function resolvePromptInvocation(
   controller: Pick<AgentController<MastraCodeState>, 'getSessionByResource'>,
@@ -64,12 +101,7 @@ export async function resolveSkillInvocation(
   const session = (await controller.getSessionByResource(input.resourceId, input.scope)) as SkillSession | undefined;
   if (!session) throw new SkillInvocationError('session_not_found', 'Agent controller session not found.');
 
-  const skills = session.getWorkspace().skills;
-  await skills?.maybeRefresh();
-  const skill = await skills?.get(input.name);
-  if (!skill || skill['user-invocable'] === false) {
-    throw new SkillInvocationError('skill_not_found', `Skill not found: ${input.name}.`);
-  }
+  const skill = await resolveInvocableSkill(session, input.name);
 
   const args = input.arguments?.trim();
   const content = `${formatSkillActivation(skill)}${args ? `\n\nARGUMENTS: ${args}` : ''}`.trim();
@@ -94,12 +126,7 @@ export async function resolveSkillResumeInvocation(
   const session = (await controller.getSessionByResource(input.resourceId, input.scope)) as SkillSession | undefined;
   if (!session) throw new SkillInvocationError('session_not_found', 'Agent controller session not found.');
 
-  const skills = session.getWorkspace().skills;
-  await skills?.maybeRefresh();
-  const skill = await skills?.get(input.name);
-  if (!skill || skill['user-invocable'] === false) {
-    throw new SkillInvocationError('skill_not_found', `Skill not found: ${input.name}.`);
-  }
+  const skill = await resolveInvocableSkill(session, input.name);
 
   const args = input.arguments?.trim();
   const content = [
