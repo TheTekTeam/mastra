@@ -4,6 +4,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
     branches: [main, 0.x]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
@@ -12,9 +13,30 @@ concurrency:
 permissions: {}
 
 jobs:
+  local-runner-smoke:
+    name: Local runner smoke test
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, Linux, X64]
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify local Linux runner tooling
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_OS" = Linux
+          command -v gh
+          command -v jq
+          command -v node
+          command -v pnpm
+          echo "Local runner tooling present on $RUNNER_NAME"
+
   changes:
+    # Never schedule user-controlled fork PR workflow content on Dell's self-hosted runners.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     name: Detect code changes
-    runs-on: starsling-ubuntu-24.04-2
+    # Lightweight metadata job can run on our existing organization-owned Dell runners.
+    runs-on: [self-hosted, Linux, X64]
     permissions:
       contents: read
     outputs:
