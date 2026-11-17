@@ -16,6 +16,7 @@ on:
       - 'mastracode/factory/**'
       - 'packages/playground-ui/**'
       - 'packages/core/src/llm/model/**'
+      - 'packages/core/src/agent/**'
       - 'packages/core/src/loop/shared/**'
       - 'packages/core/src/loop/workflows/agentic-execution/**'
       - 'packages/core/src/agent/durable/workflows/steps/**'
@@ -83,6 +84,25 @@ jobs:
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           printf 'Exact PR head: %s\n' "$EXPECTED_HEAD"
+
+      - name: Assert managed Core ingress sources can trigger exact-head CI
+        run: |
+          node - <<'NODE'
+            const { readFileSync } = require('node:fs');
+            const workflow = readFileSync('.github/workflows/factory-0.25-quality.yml', 'utf8');
+            for (const source of [
+              'packages/core/src/agent/**',
+              'packages/core/src/llm/model/**',
+              'packages/core/src/loop/shared/**',
+              'packages/core/src/loop/workflows/agentic-execution/**',
+              'packages/core/src/stream/aisdk/v5/**',
+            ]) {
+              if (!workflow.includes(`      - '${source}'`)) {
+                throw new Error(`Factory exact-head CI trigger missing managed Core source: ${source}`);
+              }
+            }
+            console.log('Factory managed Core PR-path trigger coverage verified');
+          NODE
 
       - name: Setup pinned Node and pnpm
         uses: ./.github/actions/setup-pnpm-node
@@ -187,10 +207,12 @@ jobs:
             src/loop/shared/core-effect-engine-denial.test.ts \
             src/loop/shared/core-effect-model-denial.test.ts \
             src/agent/durable/__tests__/core-durable-model-denial.test.ts \
+            src/agent/__tests__/core-early-effect-ingress-denial.test.ts \
+            src/agent/__tests__/agent-thread-lease.test.ts \
             --reporter=json --outputFile="$RUNNER_TEMP/core-a2.json" --maxWorkers=1
           node -e '
             const fs = require("node:fs");
-            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 20, "Core"]]) {
+            for (const [path, count, label] of [[process.argv[1], 3, "Factory"], [process.argv[2], 42, "Core"]]) {
               const r = JSON.parse(fs.readFileSync(path, "utf8"));
               if (r.numTotalTests !== count || r.numPassedTests !== count ||
                   r.numPendingTests !== 0 || r.numFailedTests !== 0) {
