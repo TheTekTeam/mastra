@@ -126,6 +126,49 @@ export const REVIEW_ONLY_FACTORY_SKILLS = new Set([
  */
 const rescannedOutsideResolver = new WeakMap<object, Promise<void>>();
 
+// A sandbox reaches "running" before its onStart checkout/credentials hook
+// completes. Missing repository skills must wait for that hook, not status.
+const sandboxSetupPhases = new WeakMap<WorkspaceSandbox, Promise<void>>();
+// Only an authorized skill invocation may materialize a lazy session on a
+// cache miss. Passive workspace resolution and skill listing remain inert.
+const invocationSkillRefreshes = new WeakMap<Workspace, Promise<void>>();
+
+/** Join a checkout hook already in flight without starting a lazy sandbox. */
+export async function awaitInFlightFactorySandboxSetup(workspace: Workspace): Promise<boolean> {
+  const setup = workspace.sandbox && sandboxSetupPhases.get(workspace.sandbox);
+  if (!setup) return false;
+  await setup;
+  return true;
+}
+
+export async function refreshRepositorySkillsForInvocation(workspace: Workspace): Promise<void> {
+  const { sandbox, skills } = workspace;
+  if (!sandbox || !skills) return;
+  const existing = invocationSkillRefreshes.get(workspace);
+  if (existing) return existing;
+
+  const pending = (async () => {
+    const setupAlreadyRunning = sandboxSetupPhases.get(sandbox);
+    if (setupAlreadyRunning) {
+      await setupAlreadyRunning;
+    } else {
+      await sandbox.start?.();
+    }
+    // start() can return early during the "running but setting up" window.
+    const setup = sandboxSetupPhases.get(sandbox);
+    if (setup) await setup;
+    await skills.refresh();
+  })();
+  invocationSkillRefreshes.set(workspace, pending);
+  try {
+    await pending;
+  } finally {
+    if (invocationSkillRefreshes.get(workspace) === pending) {
+      invocationSkillRefreshes.delete(workspace);
+    }
+  }
+}
+
 /**
  * Rescan a session's skill cache so a role gained after the cache was built
  * (a review binding minted after the session's workspace resolved) takes effect.
@@ -843,10 +886,18 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
           // stack a wrapper per call. Factory's setup runs first: a hook the
           // callback installed itself expects a prepared workspace.
           sandbox.setOnStart(previous => async args => {
-            await timedPhase(`workspace.onStart(${args.outcome})`, async () => {
-              await setupHook(args);
-            });
-            await previous?.(args);
+            const pending = (async () => {
+              await timedPhase(`workspace.onStart(${args.outcome})`, async () => {
+                await setupHook(args);
+              });
+              await previous?.(args);
+            })();
+            sandboxSetupPhases.set(sandbox, pending);
+            try {
+              await pending;
+            } finally {
+              if (sandboxSetupPhases.get(sandbox) === pending) sandboxSetupPhases.delete(sandbox);
+            }
           });
           // Only a freshly constructed instance starts eagerly; the start itself
           // waits for this resolver to finish because the start hook reads
