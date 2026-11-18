@@ -29,6 +29,8 @@ import {
   readBoardVersion,
   trackBoardWrites,
 } from './board-version.js';
+import { parseIssueCompletionReceipt } from './completion-evidence.js';
+import type { IssueCompletionReceipt } from './completion-evidence.js';
 
 export type WorkItemStage = string;
 
