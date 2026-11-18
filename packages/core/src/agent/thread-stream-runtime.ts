@@ -5,6 +5,11 @@ import { isLeaseProvider, NoopLeaseProvider } from '../events/pubsub';
 import type { LeaseProvider, PubSub } from '../events/pubsub';
 import type { EventCallback } from '../events/types';
 import { AGENTIC_LOOP_WORKFLOW_ID } from '../loop/loop-builder';
+import {
+  CORE_EFFECT_ADMISSION_CAPABILITY,
+  beforeCoreAgentPreparation,
+  assertCoreSynchronousIngress,
+} from '../loop/shared/core-effect-admission';
 import { parseMemoryRequestContext } from '../memory/types';
 import { MASTRA_RESOURCE_ID_KEY, MASTRA_THREAD_ID_KEY, RequestContext } from '../request-context';
 import type { MastraModelOutput } from '../stream/base/output';
@@ -3659,6 +3664,8 @@ export class AgentThreadStreamRuntime {
     resume: () => Promise<MastraModelOutput<OUTPUT>>,
     pubsub?: PubSub,
   ): Promise<MastraModelOutput<OUTPUT>> {
+    const admission = beforeCoreAgentPreparation();
+    if (admission) await admission;
     const state = this.#getState(pubsub);
     const previousTail = state.resumeTailsByRunId.get(runId) ?? Promise.resolve();
     let resolveStarted!: (output: MastraModelOutput<OUTPUT>) => void;
@@ -4174,6 +4181,13 @@ export class AgentThreadStreamRuntime {
     pubsub?: PubSub,
     registrationOptions?: AgentThreadStrictRegistrationOptions | AgentThreadStreamRegistrationOptions,
   ): Promise<void | AgentThreadRunRegistration> | undefined {
+    // Only selected future managed mode may inspect strict this early. In
+    // default-disabled legacy mode the strict accessor must be read exactly
+    // where it was historically read, after thread/output preparation.
+    // Otherwise a side-effecting getter changes normal caller behaviour.
+    if (CORE_EFFECT_ADMISSION_CAPABILITY.runtimeMode !== 'disabled' && !registrationOptions?.strict) {
+      assertCoreSynchronousIngress('synchronous-nonstrict-thread-registration');
+    }
     const { threadId, resourceId } = this.#getThreadTarget(streamOptions);
     const preparedRun = streamOptions.abortSignal
       ? this.#preparedRunsByAbortSignal.get(streamOptions.abortSignal)
@@ -4199,6 +4213,8 @@ export class AgentThreadStreamRuntime {
       return this.#registerRunStrict(agent, output, streamOptions, pubsub, threadId, resourceId, registrationOptions);
     }
 
+    // Legacy registration still tolerates lease failure for unmanaged callers;
+    // selected managed mode rejects this path at method entry above.
     const state = this.#getState(pubsub);
     this.#sweepStaleSuspendedRecords(state, pubsub);
     const key = this.#threadKey(resourceId, threadId);
@@ -6846,6 +6862,7 @@ export class AgentThreadStreamRuntime {
     target: QueueAgentSignalOptions<OUTPUT>,
     pubsub?: PubSub,
   ): QueueAgentSignalResult<OUTPUT> {
+    assertCoreSynchronousIngress('synchronous-thread-signal');
     const state = this.#getState(pubsub);
     const acceptedAt = new Date();
     let key: string | undefined;
@@ -7014,6 +7031,7 @@ export class AgentThreadStreamRuntime {
     pubsub: PubSub | undefined,
     waitForIdle: boolean,
   ): SendAgentSignalResult<OUTPUT> {
+    assertCoreSynchronousIngress('synchronous-thread-signal');
     const target = withThreadTargetScopes(inputTarget, agent.getMastraInstance?.());
     const state = this.#getState(pubsub);
     let key: string | undefined;
@@ -7388,13 +7406,9 @@ export class AgentThreadStreamRuntime {
         throw error;
       }
 
-      // Fail-open on pubsub errors: if the lease backend is unreachable we treat the
-      // call as "acquired" so the caller still gets a response. The tradeoff is that
-      // if multiple processes hit the same pubsub failure simultaneously they can each
-      // start a stream for the same thread (the bug this lease is supposed to prevent),
-      // but failing closed would silently drop user messages on any Redis blip which
-      // is the worse failure mode. Lease TTL + renewal still bound the duplicate
-      // window to a single run, and the next clean acquireLease re-serializes callers.
+      // Legacy unmanaged behavior intentionally favors availability on pubsub
+      // failure. This is NOT authoritative ownership: future managed mode is
+      // denied synchronously at #sendSignal ingress, before this optimistic path.
       const lease = await this.#waitForRetakeOwner(
         leaseProvider,
         reservedKey,
