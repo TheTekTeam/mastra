@@ -218,6 +218,85 @@ export async function refreshGithubToken(requestContext: RequestContext, github:
   injectGithubToken(requestContext, token);
 }
 
+
+/**
+ * Session-bound GitHub issue operations. The server's App owns the credentials;
+ * the agent never chooses an arbitrary repository or receives a bearer token.
+ */
+async function boundGithubIssueApi(requestContext: RequestContext, github: GithubIntegration) {
+  const target = await resolveSessionTarget(requestContext, github);
+  const [owner, repo, ...remainder] = target.repository.slug.split('/');
+  const installationId = Number(target.installation.externalId);
+  if (!owner || !repo || remainder.length || !Number.isSafeInteger(installationId) || installationId <= 0) {
+    throw new Error('Invalid session-bound GitHub repository.');
+  }
+  return { owner, repo, slug: target.repository.slug, octokit: github.getInstallationOctokit(installationId) };
+}
+
+const boundIssueSchema = z.object({ issueNumber: z.number().int().positive() });
+
+export async function readBoundGithubIssue(requestContext: RequestContext, issueNumber: number, github: GithubIntegration) {
+  const { owner, repo, slug, octokit } = await boundGithubIssueApi(requestContext, github);
+  const { data } = await octokit.issues.get({ owner, repo, issue_number: issueNumber });
+  return {
+    repository: slug,
+    number: data.number,
+    title: data.title,
+    body: data.body ?? '',
+    state: data.state,
+    author: data.user?.login ?? null,
+    url: data.html_url,
+    assignees: (data.assignees ?? []).map(user => user.login),
+    labels: (data.labels ?? []).map(label => typeof label === 'string' ? label : label.name).filter(Boolean),
+    commentsCount: data.comments,
+  };
+}
+
+export async function listBoundGithubIssueComments(requestContext: RequestContext, issueNumber: number, github: GithubIntegration) {
+  const { owner, repo, slug, octokit } = await boundGithubIssueApi(requestContext, github);
+  const comments: Array<{ id: number; author: string | null; body: string; url: string; createdAt: string }> = [];
+  let truncated = false;
+  for (let page = 1; page <= 10; page++) {
+    const { data } = await octokit.issues.listComments({ owner, repo, issue_number: issueNumber, per_page: 100, page });
+    comments.push(...data.map(comment => ({
+      id: comment.id,
+      author: comment.user?.login ?? null,
+      body: comment.body ?? '',
+      url: comment.html_url,
+      createdAt: comment.created_at,
+    })));
+    if (data.length < 100) break;
+    if (page === 10) truncated = true;
+  }
+  return { repository: slug, issueNumber, comments, truncated };
+}
+
+export async function updateBoundGithubIssueLabels(
+  requestContext: RequestContext,
+  input: { issueNumber: number; add?: string[]; remove?: string[] },
+  github: GithubIntegration,
+) {
+  const { owner, repo, slug, octokit } = await boundGithubIssueApi(requestContext, github);
+  const additions = [...new Set(input.add ?? [])];
+  const removals = [...new Set(input.remove ?? [])].filter(label => !additions.includes(label));
+  for (const name of removals) {
+    try {
+      await octokit.issues.removeLabel({ owner, repo, issue_number: input.issueNumber, name });
+    } catch (error) {
+      if ((error as { status?: number }).status !== 404) throw error;
+    }
+  }
+  if (additions.length) {
+    await octokit.issues.addLabels({ owner, repo, issue_number: input.issueNumber, labels: additions });
+  }
+  const { data } = await octokit.issues.get({ owner, repo, issue_number: input.issueNumber });
+  return {
+    repository: slug,
+    issueNumber: input.issueNumber,
+    labels: (data.labels ?? []).map(label => typeof label === 'string' ? label : label.name).filter(Boolean),
+  };
+}
+
 export function createGithubSubscriptionTools(requestContext: RequestContext, github: GithubIntegration) {
   if (!isGithubProjectSession(requestContext)) return {};
 
@@ -231,6 +310,28 @@ export function createGithubSubscriptionTools(requestContext: RequestContext, gi
         await refreshGithubToken(requestContext, github);
         return { refreshed: true };
       },
+    }),
+
+    github_read_issue: createTool({
+      id: 'github_read_issue',
+      description: 'Read an issue in the active Factory session repository via server-side GitHub App credentials. No gh CLI required.',
+      inputSchema: boundIssueSchema,
+      execute: async ({ issueNumber }) => readBoundGithubIssue(requestContext, issueNumber, github),
+    }),
+    github_list_issue_comments: createTool({
+      id: 'github_list_issue_comments',
+      description: 'Read issue comments in the active Factory session repository via the server-side GitHub App.',
+      inputSchema: boundIssueSchema,
+      execute: async ({ issueNumber }) => listBoundGithubIssueComments(requestContext, issueNumber, github),
+    }),
+    github_update_issue_labels: createTool({
+      id: 'github_update_issue_labels',
+      description: 'Add/remove existing labels only on an issue in the active Factory session repository.',
+      inputSchema: boundIssueSchema.extend({
+        add: z.array(z.string().min(1).max(100)).max(25).optional(),
+        remove: z.array(z.string().min(1).max(100)).max(25).optional(),
+      }),
+      execute: async input => updateBoundGithubIssueLabels(requestContext, input, github),
     }),
     github_upsert_factory_triage_comment: createTool({
       id: 'github_upsert_factory_triage_comment',
