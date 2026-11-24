@@ -89,6 +89,7 @@ import {
 } from './routes/tenant-credentials.js';
 import { readFactorySessionScope, resolveFactorySessionAddress } from './rules/binding-context.js';
 import { FactoryDecisionDispatcher } from './rules/dispatcher.js';
+import type { FactoryDecisionDispatcherOptions } from './rules/dispatcher.js';
 import type { FactoryRuleActor } from './rules/index.js';
 import { FactoryPhaseStateProcessor, reportMemorySettingsUnavailable } from './rules/processor.js';
 import { createReviewSourceTool, resolveReviewSourceUiOrigin } from './rules/review-source-tool.js';
@@ -342,6 +343,9 @@ export type { FactorySandboxStart } from './workspace.js';
  */
 export interface MastraFactoryDispatcherConfig {
   maxInFlight?: number;
+  /** External worker runs only within an already claimed Factory deferred decision. */
+  externalSkillExecutor?: FactoryDecisionDispatcherOptions['externalSkillExecutor'];
+  denyModelPendingStart?: FactoryDecisionDispatcherOptions['denyModelPendingStart'];
 }
 
 const CONTROLLER_ID = 'code';
@@ -1728,6 +1732,8 @@ export class MastraFactory {
                 audit: auditDomain,
                 boards: this.#boards,
                 maxInFlight: this.#config.dispatcher?.maxInFlight,
+                externalSkillExecutor: this.#config.dispatcher?.externalSkillExecutor,
+                denyModelPendingStart: this.#config.dispatcher?.denyModelPendingStart,
                 isAutoRunEnabled: async ({ orgId, factoryProjectId }) => {
                   await factoryProjectsStorage.ensureReady();
                   const project = await factoryProjectsStorage.get({ orgId, id: factoryProjectId });

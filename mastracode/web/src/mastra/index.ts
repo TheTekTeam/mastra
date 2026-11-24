@@ -18,6 +18,7 @@
  */
 
 import { homedir } from 'node:os';
+import { createHtaiCodexNativeWorker } from './htai-codex-native.js';
 import { join } from 'node:path';
 import { Mastra } from '@mastra/core/mastra';
 import { LibSQLFactoryStorage } from '@mastra/libsql';
@@ -419,6 +420,12 @@ export const factory = new MastraFactory({
   // the dispatcher default; invalid and non-positive values are ignored.
   dispatcher: {
     maxInFlight: positiveInt(process.env.MASTRACODE_DISPATCH_MAX_IN_FLIGHT),
+    ...(process.env.FACTORY_HTAI_CODEX_WORKER_ENABLED === 'true'
+      ? {
+          externalSkillExecutor: createHtaiCodexNativeWorker(),
+          denyModelPendingStart: (projectId: string) =>
+            projectId === 'e184905a-bda5-4adb-8a4a-af64602dcda3',
+        } : {}),
   },
   // Agent state (threads, messages, memory, OM, recall vectors) lives in the
   // single app Postgres alongside the github/app tables — one shared DB (and
