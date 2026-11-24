@@ -28,6 +28,7 @@ import { E2BFactorySandbox } from '@mastra/e2b';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
+import { MastraAuthBetterAuth } from '@mastra/auth-better-auth';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -163,6 +164,11 @@ if (authDisabled) {
   }
 } else if (workosConfigured) {
   auth = new MastraAuthWorkos({ fetchMemberships: true });
+}
+else if (process.env.BETTER_AUTH_SECRET?.trim()) {
+  // Preserve current Dell production authentication and sign-up policy.
+  const signUpEnabled = process.env.MASTRACODE_BETTER_AUTH_SIGNUP_ENABLED === 'true';
+  auth = new MastraAuthBetterAuth({ secret: process.env.BETTER_AUTH_SECRET, signUpEnabled });
 }
 const secretEncryption = auth === null ? undefined : credentialEncryption();
 
