@@ -34,9 +34,13 @@ async function git(...args: string[]): Promise<string> {
   return result.stdout.trim();
 }
 export function createHtaiCodexNativeWorker() {
-  let chain: Promise<void> = Promise.resolve();
+  let active = false;
   return async function execute(input: NativeInput): Promise<boolean> {
     if (input.record.factoryProjectId !== PROJECT) return false;
+    // Do not hold a second Factory lease while another HTAI CLI task is active.
+    // Factory's own retry/claim lifecycle decides what happens to busy claims.
+    if (active) throw new Error('HTAI_CODEX_ONE_ACTIVE_TASK_LIMIT');
+    active = true;
     // Every HTAI invokeSkill is intercepted. Unsupported roles fail closed.
     const run = async (): Promise<void> => {
       need(input.record.workItemId === input.item.id, 'HTAI_NATIVE_ITEM_DRIFT');
@@ -90,10 +94,11 @@ export function createHtaiCodexNativeWorker() {
         issue: Number(issue[1]), lifecycleVerified: false,
       });
     };
-    // Serialise only HTAI. Native Factory dispatcher still owns all leases.
-    const turn = chain.then(run);
-    chain = turn.then(() => {}, () => {});
-    await turn;
+    try {
+      await run();
+    } finally {
+      active = false;
+    }
     return true;
   };
 }
