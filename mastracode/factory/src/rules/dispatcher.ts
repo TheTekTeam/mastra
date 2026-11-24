@@ -395,6 +395,14 @@ export interface FactoryDecisionDispatcherOptions {
   reconcileToolResults?: () => Promise<void>;
   prepareBinding?: (input: FactoryBindingPreparationInput) => Promise<void>;
   primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  /** Factory-owned native lease hook. True handles this decision, false uses native agent. */
+  externalSkillExecutor?: (input: {
+    record: FactoryDeferredDecisionRecord;
+    decision: Extract<FactoryCommitDecision, { type: 'invokeSkill' }>;
+    item: WorkItemRow;
+  }) => Promise<boolean>;
+  /** When set, deny standard-model pending starts for selected projects. */
+  denyModelPendingStart?: (factoryProjectId: string) => boolean;
   /**
    * Told when a run fails terminally at dispatch, so whoever follows the item
    * hears about failures no run end covers. How runs end is reported by the
@@ -593,6 +601,8 @@ export class FactoryDecisionDispatcher {
   readonly #reconcileToolResults?: () => Promise<void>;
   readonly #prepareBinding?: (input: FactoryBindingPreparationInput) => Promise<void>;
   readonly #primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
+  readonly #externalSkillExecutor?: FactoryDecisionDispatcherOptions['externalSkillExecutor'];
+  readonly #denyModelPendingStart?: FactoryDecisionDispatcherOptions['denyModelPendingStart'];
   readonly #reportRunEnd?: FactoryRunEndReporter;
   readonly #feedReader?: FactoryFeedReader;
   readonly #dismissStaleReviews?: FactoryDecisionDispatcherOptions['dismissStaleReviews'];
@@ -627,6 +637,8 @@ export class FactoryDecisionDispatcher {
     this.#reconcileToolResults = options.reconcileToolResults;
     this.#prepareBinding = options.prepareBinding;
     this.#primeCredentials = options.primeCredentials;
+    this.#externalSkillExecutor = options.externalSkillExecutor;
+    this.#denyModelPendingStart = options.denyModelPendingStart;
     this.#reportRunEnd = options.reportRunEnd;
     this.#feedReader = options.feedReader;
     this.#dismissStaleReviews = options.dismissStaleReviews;
@@ -938,7 +950,7 @@ export class FactoryDecisionDispatcher {
         });
         if (result.status === 'rejected') throw new Error(`${result.code}: ${result.reason}`);
         const transitionMessage = decision.message;
-        if (!transitionMessage) return;
+        if (!transitionMessage || this.#denyModelPendingStart?.(record.factoryProjectId)) return;
         // The message may wake an idle session and hold it for a whole agent
         // run, so it is queued as its own sendMessage decision for the run
         // pool; the stage change above never waits on run capacity. Keyed by
@@ -993,6 +1005,21 @@ export class FactoryDecisionDispatcher {
           (await this.#decisionOvertaken(record, decision.role))
         ) {
           throw new FactoryDecisionSuperseded();
+        }
+        if (this.#externalSkillExecutor) {
+          // The Factory dispatcher has already claimed and is renewing the native
+          // deferred decision lease. Do not mint a second execution claim here.
+          const claimedItem = record.workItemId
+            ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
+            : null;
+          if (!claimedItem) throw new Error('Factory claimed Codex work item is unavailable.');
+          const handled = await this.#externalSkillExecutor({
+            record,
+            decision,
+            item: claimedItem,
+          });
+          if (typeof handled !== 'boolean') throw new Error('Factory external skill result is invalid.');
+          if (handled) return;
         }
         const binding = await this.#requireOrPrepareBinding(record, decision.role);
         await this.#withBindingSkillRun(binding.id, async () => {
@@ -1233,6 +1260,9 @@ export class FactoryDecisionDispatcher {
         return;
       }
       case 'sendMessage': {
+        if (this.#denyModelPendingStart?.(record.factoryProjectId)) {
+          throw new Error('HTAI_CODEX_MODEL_MESSAGE_FORBIDDEN');
+        }
         const binding = await this.#messageBinding(record, decision);
         // Nobody live on the card means nobody to tell, not a failure to retry.
         if (!binding) return;
@@ -1761,6 +1791,11 @@ export class FactoryDecisionDispatcher {
         async leaseExpiresAt =>
           this.#storage.renewPendingStartLease(leaseIdentity(record, this.#ownerId), leaseExpiresAt),
         async () => {
+          // Never start the normal API-backed model for HTAI while the
+          // subscription-only Codex native worker owns that project.
+          if (this.#denyModelPendingStart?.(record.factoryProjectId)) {
+            throw new Error('HTAI_CODEX_PENDING_MODEL_RUN_FORBIDDEN');
+          }
           if (record.message === null) return;
           const bindings = await this.#storage.listRunBindings(record.orgId, record.factoryProjectId);
           const binding = bindings.find(
